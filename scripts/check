@@ -1,0 +1,77 @@
+#!/bin/sh
+set -eu
+
+root=$(cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$root"
+
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+ruff check .
+ruff format --check .
+
+test -x bin/rofi-agent-picker
+test -x scripts/check
+test -f README.md
+test -f LICENSE
+test -f pyproject.toml
+test -f examples/config.toml
+test -f .github/workflows/ci.yml
+
+# Check this gate itself even before the initial commit, then inspect every
+# tracked or candidate-untracked shell file.  The latter is deliberately based
+# on Git's combined file view instead of git ls-files alone.
+shellcheck scripts/check
+git ls-files --cached --others --exclude-standard -- '*.sh' |
+    while IFS= read -r shell_file; do
+        [ -z "$shell_file" ] || shellcheck "$shell_file" || exit 1
+    done
+
+# git diff --check cannot see untracked files.  Scan the complete candidate
+# view for the text-file invariants that matter before and after the first
+# commit.  The scanner is read-only and skips binary files by NUL detection.
+PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+
+paths = subprocess.run(
+    ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+    check=True,
+    capture_output=True,
+    text=True,
+).stdout.splitlines()
+problems: list[str] = []
+for name in paths:
+    path = Path(name)
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        problems.append(f"{name}: cannot read candidate ({exc})")
+        continue
+    if b"\0" in data:
+        continue
+    if b"\r\n" in data:
+        problems.append(f"{name}: CRLF line ending")
+    if data and not data.endswith(b"\n"):
+        problems.append(f"{name}: missing final newline")
+    for number, line in enumerate(data.splitlines(), start=1):
+        if line.endswith((b" ", b"\t")):
+            problems.append(f"{name}:{number}: trailing whitespace")
+
+if problems:
+    print("candidate text-file check failed:", file=sys.stderr)
+    print("\n".join(problems), file=sys.stderr)
+    raise SystemExit(1)
+PY
+
+# Keep Git's staged/unstaged checks as an additional guard once files are
+# tracked or staged; they are intentionally redundant after the candidate scan.
+git diff --check
+git diff --cached --check
+
+if find . -type d -name __pycache__ -print -quit | grep -q .; then
+    echo "unexpected __pycache__ directory" >&2
+    exit 1
+fi

@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+"""Executable entry point for Rofi script mode and diagnostics."""
+
+from __future__ import annotations
+
+import pathlib
+import sys
+
+# The picker is commonly materialized as a standalone archive.  Keep imports
+# relative to the archive and never leave bytecode beside the managed files.
+sys.dont_write_bytecode = True
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from rofi_agent_picker.app import main  # noqa: E402
+
+
+raise SystemExit(main())
