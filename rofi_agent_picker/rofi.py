@@ -15,6 +15,7 @@ from collections.abc import Mapping, Sequence
 from html import escape
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, unquote
 
 from . import engine
 from .cache import CacheStore
@@ -29,6 +30,8 @@ AUTO_REFRESH_POLL_SECONDS = 1
 AUTO_REFRESH_MAX_SECONDS = 30
 AUTO_REFRESH_DATA_PREFIX = "background-refresh:"
 AUTO_REFRESH_IDLE_DATA = "idle"
+ERROR_NOTICE_SECONDS = 3
+ERROR_NOTICE_DATA_PREFIX = "error-notice:"
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 _DISPLAY_CONTROL_CHARS = re.compile(r"[\x00-\x09\x0b-\x1f\x7f]")
 
@@ -211,30 +214,86 @@ def summarize_errors(errors: Sequence[object]) -> str:
     return joined if len(joined) <= MAX_MESSAGE_LENGTH else joined[: MAX_MESSAGE_LENGTH - 1] + "…"
 
 
-def _timeout_theme(enabled: bool) -> str:
+def _timeout_theme(
+    delay: int | float | bool | None = None,
+    *,
+    enabled: bool | None = None,
+) -> str:
     """Build the per-dialog timeout configuration used by script mode."""
 
-    delay = AUTO_REFRESH_POLL_SECONDS if enabled else 0
-    return f'configuration {{ timeout {{ delay: {delay}; action: "kb-custom-19"; }} }}'
+    if delay is None:
+        delay = bool(enabled)
+    if isinstance(delay, bool):
+        delay = AUTO_REFRESH_POLL_SECONDS if delay else 0
+    normalized_delay = max(0, int(delay))
+    return f'configuration {{ timeout {{ delay: {normalized_delay}; action: "kb-custom-19"; }} }}'
 
 
-def _refresh_data(deadline: float | None) -> str:
-    """Encode the bounded polling deadline in Rofi's continuation data."""
+def _refresh_data(
+    refresh_deadline: float | None = None,
+    error_deadline: float | None = None,
+    error_message: str = "",
+    *,
+    deadline: float | None = None,
+) -> str:
+    """Encode refresh and notice deadlines in Rofi's continuation data."""
 
-    if deadline is None:
+    if refresh_deadline is None:
+        refresh_deadline = deadline
+    values: list[str] = []
+    if refresh_deadline is not None:
+        values.append(f"{AUTO_REFRESH_DATA_PREFIX}{max(0, int(refresh_deadline))}")
+    if error_deadline is not None:
+        encoded_message = quote(sanitize(error_message), safe="")
+        values.append(
+            f"{ERROR_NOTICE_DATA_PREFIX}{max(0, int(error_deadline))}"
+            f"{':' + encoded_message if encoded_message else ''}"
+        )
+    if not values:
         return AUTO_REFRESH_IDLE_DATA
-    return f"{AUTO_REFRESH_DATA_PREFIX}{max(0, int(deadline))}"
+    return ";".join(values)
+
+
+def _parse_deadline(value: object, prefix: str) -> float | None:
+    if not isinstance(value, str):
+        return None
+    for component in value.split(";"):
+        if not component.startswith(prefix):
+            continue
+        raw_deadline = component[len(prefix) :]
+        try:
+            deadline = float(raw_deadline)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return deadline if math.isfinite(deadline) and deadline > 0 else None
+    return None
 
 
 def _parse_refresh_deadline(value: object) -> float | None:
-    if not isinstance(value, str) or not value.startswith(AUTO_REFRESH_DATA_PREFIX):
-        return None
-    raw_deadline = value[len(AUTO_REFRESH_DATA_PREFIX) :]
-    try:
-        deadline = float(raw_deadline)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return deadline if math.isfinite(deadline) and deadline > 0 else None
+    return _parse_deadline(value, AUTO_REFRESH_DATA_PREFIX)
+
+
+def _parse_error_notice(value: object) -> tuple[float | None, str]:
+    if not isinstance(value, str):
+        return None, ""
+    for component in value.split(";"):
+        if not component.startswith(ERROR_NOTICE_DATA_PREFIX):
+            continue
+        payload = component[len(ERROR_NOTICE_DATA_PREFIX) :]
+        raw_deadline, separator, encoded_message = payload.partition(":")
+        try:
+            deadline = float(raw_deadline)
+        except (TypeError, ValueError, OverflowError):
+            return None, ""
+        if not math.isfinite(deadline) or deadline <= 0:
+            return None, ""
+        if not separator:
+            return deadline, ""
+        try:
+            return deadline, sanitize(unquote(encoded_message))
+        except (UnicodeError, ValueError):
+            return deadline, ""
+    return None, ""
 
 
 def render_snapshot(
@@ -247,6 +306,7 @@ def render_snapshot(
     continuation: bool = False,
     timeout: bool | None = None,
     refresh_deadline: float | None = None,
+    error_deadline: float | None = None,
     clear_message: bool = False,
 ) -> str:
     """Render a snapshot as Rofi script headers and rows."""
@@ -266,15 +326,33 @@ def render_snapshot(
         # when a stale selection failed to open.
         headers.extend([_protocol("keep-selection", "true"), _protocol("keep-filter", "true")])
     effective_message = sanitize(message)
-    if not effective_message and isinstance(snapshot, Mapping):
+    if not effective_message and isinstance(snapshot, Mapping) and not clear_message:
         effective_message = summarize_errors(snapshot.get("errors", []))
     if effective_message or clear_message:
         headers.append(_protocol("message", effective_message))
     if timeout is not None:
-        headers.append(_protocol("theme", _timeout_theme(timeout)))
-        if timeout and refresh_deadline is None:
-            refresh_deadline = time.time() + AUTO_REFRESH_MAX_SECONDS
-        headers.append(_protocol("data", _refresh_data(refresh_deadline if timeout else None)))
+        if timeout:
+            if refresh_deadline is None and error_deadline is None:
+                refresh_deadline = time.time() + AUTO_REFRESH_MAX_SECONDS
+            if refresh_deadline is not None:
+                timeout_delay = AUTO_REFRESH_POLL_SECONDS
+            elif error_deadline is not None:
+                timeout_delay = max(1, math.ceil(error_deadline - time.time()))
+            else:
+                timeout_delay = AUTO_REFRESH_POLL_SECONDS
+        else:
+            timeout_delay = 0
+        headers.append(_protocol("theme", _timeout_theme(timeout_delay)))
+        headers.append(
+            _protocol(
+                "data",
+                _refresh_data(
+                    refresh_deadline if timeout else None,
+                    error_deadline if timeout else None,
+                    effective_message if timeout and error_deadline is not None else "",
+                ),
+            )
+        )
 
     rendered_rows: list[str] = []
     emitted = 0
@@ -420,6 +498,27 @@ def _message_for_cache(
     return errors
 
 
+def _render_error_notice(
+    snapshot: Mapping[str, Any] | None,
+    message: str,
+    *,
+    preserve: bool = False,
+    continuation: bool = False,
+    error_deadline: float | None = None,
+) -> str:
+    """Render a user-visible error with a bounded, self-clearing timeout."""
+
+    return render_snapshot(
+        snapshot,
+        message=message,
+        preserve=preserve,
+        timeout=True,
+        error_deadline=error_deadline or time.time() + ERROR_NOTICE_SECONDS,
+        clear_message=True,
+        continuation=continuation,
+    )
+
+
 def _start_background_refresh(
     store: CacheStore,
 ) -> tuple[bool, float | None]:
@@ -447,10 +546,58 @@ def _auto_refresh_callback(
 
     snapshot = store.load(config.fingerprint)
     fresh = snapshot is not None and store.is_fresh(snapshot, config.refresh_seconds)
+    error_deadline, error_message = _parse_error_notice(environ.get("ROFI_DATA"))
+    now = time.time()
     if fresh:
+        errors = summarize_errors(snapshot.get("errors", []))
+        if errors:
+            # A completed background refresh can introduce errors after the
+            # original one-second polling deadline was encoded.  Start a new
+            # bounded notice for those current errors, then keep that same
+            # deadline across subsequent callbacks.
+            if error_deadline is not None and now >= error_deadline and error_message == errors:
+                return render_snapshot(
+                    snapshot,
+                    preserve=True,
+                    timeout=False,
+                    clear_message=True,
+                    continuation=True,
+                )
+            if error_deadline is None or error_message != errors:
+                error_deadline = now + ERROR_NOTICE_SECONDS
+            if now < error_deadline:
+                return render_snapshot(
+                    snapshot,
+                    message=errors,
+                    preserve=True,
+                    timeout=True,
+                    error_deadline=error_deadline,
+                    clear_message=True,
+                    continuation=True,
+                )
+            return render_snapshot(
+                snapshot,
+                preserve=True,
+                timeout=False,
+                clear_message=True,
+                continuation=True,
+            )
+
+        # Foreground operation failures carry their message in continuation
+        # data.  Keep that notice visible until its own deadline even when
+        # the cache itself has no refresh errors.
+        if error_deadline is not None and now < error_deadline and error_message:
+            return render_snapshot(
+                snapshot,
+                message=error_message,
+                preserve=True,
+                timeout=True,
+                error_deadline=error_deadline,
+                clear_message=True,
+                continuation=True,
+            )
         return render_snapshot(
             snapshot,
-            message=summarize_errors(snapshot.get("errors", [])),
             preserve=True,
             timeout=False,
             clear_message=True,
@@ -458,19 +605,26 @@ def _auto_refresh_callback(
         )
 
     deadline = _parse_refresh_deadline(environ.get("ROFI_DATA"))
-    timed_out = deadline is not None and time.time() >= deadline
+    timed_out = deadline is not None and now >= deadline
     marker_active = not timed_out and store.background_active(max_age=AUTO_REFRESH_MAX_SECONDS)
     if marker_active:
+        if deadline is None:
+            deadline = now + AUTO_REFRESH_MAX_SECONDS
         if snapshot is None:
-            message = "Refreshing in background"
+            background_message = "Refreshing in background"
         else:
-            message = _message_for_cache(store, snapshot, config, fresh=False)
+            # Errors in a stale snapshot belong to the previous refresh.  A
+            # current error notice is emitted once the new worker snapshot is
+            # fresh, so keep the polling status unambiguous here.
+            background_message = "Refreshing in background"
+        notice_active = error_deadline is not None and now < error_deadline and bool(error_message)
         return render_snapshot(
             snapshot,
-            message=message,
+            message=error_message if notice_active else background_message,
             preserve=True,
             timeout=True,
             refresh_deadline=deadline,
+            error_deadline=error_deadline if notice_active else None,
             continuation=True,
         )
 
@@ -479,18 +633,34 @@ def _auto_refresh_callback(
     # final read so a completed refresh wins over the stale stopped state.
     latest = store.load(config.fingerprint)
     if latest is not None and store.is_fresh(latest, config.refresh_seconds):
+        latest_message = summarize_errors(latest.get("errors", []))
+        if latest_message:
+            return _render_error_notice(
+                latest,
+                latest_message,
+                preserve=True,
+                continuation=True,
+            )
         return render_snapshot(
             latest,
-            message=summarize_errors(latest.get("errors", [])),
             preserve=True,
             timeout=False,
             clear_message=True,
             continuation=True,
         )
 
+    if error_deadline is not None and now < error_deadline and error_message:
+        return render_snapshot(
+            snapshot,
+            message=error_message,
+            preserve=True,
+            timeout=True,
+            error_deadline=error_deadline,
+            clear_message=True,
+            continuation=True,
+        )
     return render_snapshot(
         snapshot,
-        message=summarize_errors(snapshot.get("errors", [])) if snapshot is not None else "",
         preserve=True,
         timeout=False,
         clear_message=True,
@@ -534,15 +704,33 @@ def run_rofi(
     try:
         config = config or load_config()
     except ConfigError as exc:
-        print(
-            render_snapshot(
+        if retv == ROFI_RETV_CUSTOM_19:
+            deadline, message = _parse_error_notice(environ.get("ROFI_DATA"))
+            now = time.time()
+            if deadline is not None and now >= deadline:
+                rendered = render_snapshot(
+                    None,
+                    preserve=True,
+                    timeout=False,
+                    clear_message=True,
+                    continuation=True,
+                )
+            else:
+                rendered = _render_error_notice(
+                    None,
+                    message or str(exc),
+                    preserve=True,
+                    continuation=True,
+                    error_deadline=deadline,
+                )
+        else:
+            rendered = _render_error_notice(
                 None,
-                message=str(exc),
-                timeout=False if retv != 0 else None,
+                str(exc),
+                preserve=retv != 0,
                 continuation=retv != 0,
-            ),
-            end="",
-        )
+            )
+        print(rendered, end="")
         return 0
 
     if retv in {2, 3}:
@@ -580,10 +768,9 @@ def run_rofi(
         except (engine.PickerError, OSError, subprocess.SubprocessError) as exc:
             snapshot = store.load(config.fingerprint)
             print(
-                render_snapshot(
+                _render_error_notice(
                     snapshot,
                     message=f"Unable to open session: {sanitize(exc)}",
-                    selected=selected,
                     preserve=True,
                     continuation=True,
                 ),
@@ -607,8 +794,35 @@ def run_rofi(
                 if deadline is None:
                     deadline = time.time() + AUTO_REFRESH_MAX_SECONDS
             message = _message_for_cache(store, snapshot, config, fresh=fresh)
+            if fresh and message:
+                print(
+                    _render_error_notice(
+                        snapshot,
+                        message,
+                        preserve=True,
+                        continuation=True,
+                    ),
+                    end="",
+                )
+                return 0
             if not fresh and not polling:
                 message = summarize_errors(snapshot.get("errors", []))
+            elif not fresh:
+                # Errors in this snapshot belong to the previous refresh;
+                # current provider errors are reported when the new snapshot
+                # completes and receive their own bounded notice.
+                message = "Refreshing in background"
+            if not fresh and not polling and message:
+                print(
+                    _render_error_notice(
+                        snapshot,
+                        message,
+                        preserve=True,
+                        continuation=True,
+                    ),
+                    end="",
+                )
+                return 0
             print(
                 render_snapshot(
                     snapshot,
@@ -624,11 +838,10 @@ def run_rofi(
         except (engine.PickerError, OSError, subprocess.SubprocessError) as exc:
             snapshot = store.load(config.fingerprint)
             print(
-                render_snapshot(
+                _render_error_notice(
                     snapshot,
                     message=f"Refresh failed: {sanitize(exc)}",
                     preserve=True,
-                    timeout=False,
                     continuation=True,
                 ),
                 end="",
@@ -642,7 +855,10 @@ def run_rofi(
         try:
             snapshot = store.refresh(config)
         except (engine.PickerError, OSError, subprocess.SubprocessError) as exc:
-            print(render_snapshot(None, message=f"Refresh failed: {sanitize(exc)}"), end="")
+            print(
+                _render_error_notice(None, f"Refresh failed: {sanitize(exc)}"),
+                end="",
+            )
             return 0
     else:
         fresh = store.is_fresh(snapshot, config.refresh_seconds)
@@ -654,19 +870,22 @@ def run_rofi(
                 # with rows that are already obsolete.
                 latest = store.load(config.fingerprint)
                 if latest is not None and store.is_fresh(latest, config.refresh_seconds):
+                    latest_message = summarize_errors(latest.get("errors", []))
                     print(
-                        render_snapshot(
-                            latest,
-                            message=summarize_errors(latest.get("errors", [])),
-                        ),
+                        _render_error_notice(latest, latest_message)
+                        if latest_message
+                        else render_snapshot(latest),
                         end="",
                     )
                     return 0
             message = (
-                _message_for_cache(store, snapshot, config, fresh=False)
+                "Refreshing in background"
                 if polling
                 else summarize_errors(snapshot.get("errors", []))
             )
+            if not polling and message:
+                print(_render_error_notice(snapshot, message), end="")
+                return 0
             print(
                 render_snapshot(
                     snapshot,
@@ -677,5 +896,9 @@ def run_rofi(
                 end="",
             )
             return 0
-    print(render_snapshot(snapshot, message=_message_for_cache(store, snapshot, config)), end="")
+    message = _message_for_cache(store, snapshot, config)
+    if message:
+        print(_render_error_notice(snapshot, message), end="")
+    else:
+        print(render_snapshot(snapshot), end="")
     return 0

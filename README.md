@@ -81,8 +81,9 @@ While that worker is running, the open dialog polls the marker about once per
 second and replaces the cached rows as soon as the fresh snapshot is written;
 the status then clears and polling stops.  A failed or stalled worker also
 stops polling and clears the transient status while leaving the cached rows
-usable.  The new result is also visible the next time the picker opens or
-after `Alt+R`.
+usable.  Current refresh/provider errors are shown for about three seconds and
+then cleared automatically; the rows remain available throughout.  The new
+result is also visible the next time the picker opens or after `Alt+R`.
 Per-host snapshots and rows from failed provider stages are retained while a
 host is unavailable, and current errors are summarized in the message area.
 There is intentionally no resident process or push-update channel.
@@ -107,10 +108,15 @@ behavior, including Codex `@codex_thread_id`, Claude
 Niri window focus, and remote SSH attach behavior.  OpenCode discovery keeps
 the root-only `parent_id IS NULL` filter and all-project scope.
 
-## Scope of this release
+## Deployment and ownership
 
-This repository is the standalone v0.1 proof.  It does not change the DMS
-plugin, chezmoi bindings/settings, DMS ownership, or Starship deployment.
-Layered navigation, project scoping, and synthetic-session cleanup are also
-out of scope.  Those changes require a separate reviewed cutover after the
-Rofi behavior has been proven.
+This repository is the canonical implementation of the deployed Agent Picker.
+Chezmoi pins the release archive and owns the Rofi mode, its host configuration,
+and the Niri binding.  DMS remains responsible for the bar, notifications,
+idle handling, lock screen, polkit, and the general Spotlight launcher.
+
+The former DMS Agent Picker repository is retained for compatibility and
+history, but is deprecated; new picker behavior belongs here.  The flat Rofi
+presentation intentionally keeps layered navigation, project scoping, and
+synthetic-session cleanup out of scope until they have a separately reviewed
+design.
