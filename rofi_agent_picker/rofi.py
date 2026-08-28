@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,10 @@ from .config import ConfigError, PickerConfig, load_config
 
 ROFI_RETV_SELECTED = 1
 ROFI_RETV_CUSTOM_1 = 10
+ROFI_RETV_CUSTOM_2 = 11
+ROFI_RETV_CUSTOM_3 = 12
+ROFI_RETV_CUSTOM_4 = 13
+ROFI_RETV_CUSTOM_5 = 14
 ROFI_RETV_CUSTOM_19 = 28
 MAX_MESSAGE_LENGTH = 360
 FORCED_REFRESH_TIMEOUT_SECONDS = 30
@@ -32,6 +37,8 @@ AUTO_REFRESH_DATA_PREFIX = "background-refresh:"
 AUTO_REFRESH_IDLE_DATA = "idle"
 ERROR_NOTICE_SECONDS = 3
 ERROR_NOTICE_DATA_PREFIX = "error-notice:"
+NAVIGATION_DATA_PREFIX = "navigation:"
+NAVIGATION_DATA_VERSION = 1
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 _DISPLAY_CONTROL_CHARS = re.compile(r"[\x00-\x09\x0b-\x1f\x7f]")
 
@@ -40,6 +47,7 @@ PROVIDER_LABELS = {
     "claude": "Claude Code",
     "opencode": "OpenCode",
 }
+PROVIDER_ORDER = ("codex", "claude", "opencode")
 PROVIDER_SEARCH_TERMS = {
     "codex": "codex",
     "claude": "claude claude-code claude code",
@@ -60,6 +68,115 @@ def sanitize(value: object) -> str:
 
     text = str(value) if value is not None else ""
     return _CONTROL_CHARS.sub(" ", text).strip()
+
+
+@dataclass(frozen=True)
+class NavigationState:
+    """The view and optional group scope currently shown by the picker.
+
+    ``view`` is always one of the three top-level views.  A host scope stores
+    the displayed host label, while a provider scope stores its stable provider
+    kind.  The constructor normalizes malformed values so untrusted
+    continuation data can never create an invalid state.
+    """
+
+    view: str = "recent"
+    scope_kind: str | None = None
+    scope_value: str | None = None
+
+    def __post_init__(self) -> None:
+        view = (
+            self.view
+            if isinstance(self.view, str)
+            and self.view
+            in {
+                "recent",
+                "hosts",
+                "providers",
+            }
+            else "recent"
+        )
+        scope_kind = self.scope_kind
+        scope_value = sanitize(self.scope_value) if self.scope_value is not None else None
+        if view == "recent":
+            scope_kind = None
+            scope_value = None
+        elif not isinstance(scope_kind, str) or scope_kind not in {"host", "provider"}:
+            scope_kind = None
+            scope_value = None
+        elif (view == "hosts" and scope_kind != "host") or (
+            view == "providers" and scope_kind != "provider"
+        ):
+            scope_kind = None
+            scope_value = None
+        elif not scope_value:
+            scope_kind = None
+            scope_value = None
+        elif len(scope_value) > 256:
+            scope_kind = None
+            scope_value = None
+        elif scope_kind == "provider" and scope_value not in PROVIDER_LABELS:
+            scope_kind = None
+            scope_value = None
+
+        object.__setattr__(self, "view", view)
+        object.__setattr__(self, "scope_kind", scope_kind)
+        object.__setattr__(self, "scope_value", scope_value)
+
+    @property
+    def nested(self) -> bool:
+        return self.scope_kind is not None and self.scope_value is not None
+
+    @property
+    def is_default(self) -> bool:
+        return self.view == "recent" and not self.nested
+
+    def root(self) -> NavigationState:
+        """Return the current top-level view without its group scope."""
+
+        return NavigationState(self.view)
+
+
+@dataclass(frozen=True)
+class ContinuationState:
+    """Rofi continuation data shared by navigation and refresh callbacks.
+
+    Deadlines are kept in their wire-format form until :meth:`active` is
+    called.  The timeout callback needs to see an expired deadline in order to
+    clear it, while navigation callbacks only need the still-live portions.
+    Keeping this small state object in one place also prevents a navigation
+    callback from accidentally dropping a background refresh or notice.
+    """
+
+    navigation: NavigationState = NavigationState()
+    refresh_deadline: float | None = None
+    error_deadline: float | None = None
+    error_message: str = ""
+
+    @property
+    def has_lifecycle(self) -> bool:
+        return self.refresh_deadline is not None or self.error_deadline is not None
+
+    def active(self, now: float | None = None) -> ContinuationState:
+        """Return only unexpired refresh/notice components."""
+
+        current = time.time() if now is None else now
+
+        def live(deadline: float | None) -> float | None:
+            if deadline is None:
+                return None
+            try:
+                return deadline if math.isfinite(deadline) and deadline > current else None
+            except (TypeError, ValueError, OverflowError):
+                return None
+
+        error_deadline = live(self.error_deadline)
+        return ContinuationState(
+            navigation=self.navigation,
+            refresh_deadline=live(self.refresh_deadline),
+            error_deadline=error_deadline,
+            error_message=self.error_message if error_deadline is not None else "",
+        )
 
 
 def _protocol(key: str, value: object) -> str:
@@ -137,6 +254,211 @@ def _session_key(session: Mapping[str, Any]) -> tuple[str, str, str]:
     )
 
 
+def _recency_timestamp(value: object) -> float | None:
+    """Return a usable positive recency timestamp, if one is present."""
+
+    if isinstance(value, bool):
+        return None
+    try:
+        timestamp = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(timestamp) or timestamp <= 0:
+        return None
+    return timestamp
+
+
+def _session_sort_key(session: Mapping[str, Any]) -> tuple[object, ...]:
+    """Sort sessions newest-first with deterministic, human-friendly ties."""
+
+    timestamp = _recency_timestamp(session.get("recencyAt"))
+    name = sanitize(session.get("name") or session.get("id") or "Agent")
+    host = sanitize(session.get("host") or session.get("windowHost") or "local")
+    kind = sanitize(session.get("kind") or "")
+    identifier = sanitize(session.get("id") or "")
+    return (
+        0 if timestamp is not None else 1,
+        -(timestamp or 0),
+        name.casefold(),
+        name,
+        host.casefold(),
+        host,
+        kind.casefold(),
+        kind,
+        identifier.casefold(),
+        identifier,
+    )
+
+
+def _valid_sessions(snapshot: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """Copy renderable session rows while rejecting malformed identities."""
+
+    rows = snapshot.get("sessions", []) if isinstance(snapshot, Mapping) else []
+    if not isinstance(rows, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in rows:
+        if not isinstance(item, Mapping):
+            continue
+        kind = item.get("kind")
+        identifier = item.get("id")
+        if not isinstance(kind, str) or kind not in PROVIDER_LABELS:
+            continue
+        if not isinstance(identifier, str) or not identifier:
+            continue
+        result.append(dict(item))
+    return result
+
+
+def _session_host(session: Mapping[str, Any]) -> str:
+    return sanitize(session.get("host") or session.get("windowHost") or "local") or "local"
+
+
+def _newest_session_timestamp(sessions: Sequence[Mapping[str, Any]]) -> float | None:
+    timestamps = [
+        timestamp
+        for timestamp in (_recency_timestamp(item.get("recencyAt")) for item in sessions)
+        if timestamp is not None
+    ]
+    return max(timestamps) if timestamps else None
+
+
+def _group_secondary(sessions: Sequence[Mapping[str, Any]], now: float | None = None) -> str:
+    count = len(sessions)
+    noun = "session" if count == 1 else "sessions"
+    parts = [f"{count} {noun}"]
+    active_count = sum(1 for item in sessions if item.get("active"))
+    if active_count:
+        parts.append(f"{active_count} active")
+    newest = _newest_session_timestamp(sessions)
+    parts.append(f"newest {_age(newest, now) if newest is not None else 'unknown'}")
+    return "  ·  ".join(parts)
+
+
+def _host_groups(sessions: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for session in sessions:
+        grouped.setdefault(_session_host(session), []).append(session)
+
+    def sort_key(item: tuple[str, list[Mapping[str, Any]]]) -> tuple[object, ...]:
+        label, members = item
+        newest = _newest_session_timestamp(members)
+        return (
+            0 if newest is not None else 1,
+            -(newest or 0),
+            label.casefold(),
+            label,
+        )
+
+    return [
+        {"groupType": "host", "value": label, "label": label, "sessions": members}
+        for label, members in sorted(grouped.items(), key=sort_key)
+        if members
+    ]
+
+
+def _provider_groups(sessions: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[Mapping[str, Any]]] = {kind: [] for kind in PROVIDER_ORDER}
+    for session in sessions:
+        kind = session.get("kind")
+        if kind in grouped:
+            grouped[kind].append(session)
+    return [
+        {
+            "groupType": "provider",
+            "value": kind,
+            "label": PROVIDER_LABELS[kind],
+            "sessions": members,
+        }
+        for kind in PROVIDER_ORDER
+        if (members := grouped[kind])
+    ]
+
+
+def _sessions_for_navigation(
+    sessions: Sequence[Mapping[str, Any]], navigation: NavigationState
+) -> list[dict[str, Any]]:
+    if not navigation.nested:
+        return sorted((dict(item) for item in sessions), key=_session_sort_key)
+    if navigation.scope_kind == "host":
+        return sorted(
+            (dict(item) for item in sessions if _session_host(item) == navigation.scope_value),
+            key=_session_sort_key,
+        )
+    return sorted(
+        (dict(item) for item in sessions if item.get("kind") == navigation.scope_value),
+        key=_session_sort_key,
+    )
+
+
+def _breadcrumb(navigation: NavigationState) -> str:
+    view_label = navigation.view.title()
+    pieces = ["Agents", view_label]
+    if navigation.nested:
+        if navigation.scope_kind == "provider":
+            label = PROVIDER_LABELS.get(navigation.scope_value or "", navigation.scope_value or "")
+        else:
+            label = navigation.scope_value or ""
+        pieces.append(sanitize(label))
+    return " › ".join(sanitize(piece) for piece in pieces)
+
+
+def _navigation_data(navigation: NavigationState) -> str:
+    payload: dict[str, object] = {
+        "version": NAVIGATION_DATA_VERSION,
+        "view": navigation.view,
+    }
+    if navigation.nested:
+        payload["scopeType"] = navigation.scope_kind
+        payload["scopeValue"] = navigation.scope_value
+    encoded = quote(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), safe="")
+    return NAVIGATION_DATA_PREFIX + encoded
+
+
+def _parse_navigation_state(value: object) -> NavigationState:
+    """Decode navigation state while accepting legacy refresh-only data."""
+
+    if not isinstance(value, str):
+        return NavigationState()
+    for component in value.split(";"):
+        if not component.startswith(NAVIGATION_DATA_PREFIX):
+            continue
+        encoded = component[len(NAVIGATION_DATA_PREFIX) :]
+        if not encoded or len(encoded) > 4096:
+            return NavigationState()
+        try:
+            payload = json.loads(unquote(encoded))
+        except (UnicodeError, json.JSONDecodeError):
+            return NavigationState()
+        if not isinstance(payload, Mapping):
+            return NavigationState()
+        version = payload.get("version", NAVIGATION_DATA_VERSION)
+        if (
+            not isinstance(version, int)
+            or isinstance(version, bool)
+            or version != NAVIGATION_DATA_VERSION
+        ):
+            return NavigationState()
+        view = payload.get("view")
+        if not isinstance(view, str) or view not in {"recent", "hosts", "providers"}:
+            return NavigationState()
+        scope_kind = payload.get("scopeType")
+        scope_value = payload.get("scopeValue")
+        if not isinstance(scope_kind, str) or not isinstance(scope_value, str):
+            return NavigationState(view)
+        if scope_kind == "host" and view == "hosts":
+            return NavigationState(view, scope_kind, scope_value)
+        if scope_kind == "provider" and view == "providers":
+            return NavigationState(view, scope_kind, scope_value)
+        return NavigationState(view)
+    return NavigationState()
+
+
+# Keep a descriptive public spelling for focused callers and tests while the
+# private spelling makes it clear this parses untrusted Rofi input.
+parse_navigation_state = _parse_navigation_state
+
+
 def selection_payload(session: Mapping[str, Any]) -> str:
     """Encode a row's trusted selection identity for ``ROFI_INFO``."""
 
@@ -188,6 +510,21 @@ def _row_display(session: Mapping[str, Any], now: float | None = None) -> str:
     )
 
 
+def _group_display(group: Mapping[str, Any], now: float | None = None) -> str:
+    """Return the two-line Pango presentation for a host/provider group."""
+
+    label = sanitize(group.get("label") or "Group")
+    members = group.get("sessions", [])
+    if not isinstance(members, Sequence):
+        members = []
+    sessions = [item for item in members if isinstance(item, Mapping)]
+    return (
+        f"<b>{_pango_escape(label)}</b>"
+        f'{ROW_SEPARATOR}<span size="smaller" alpha="75%">'
+        f"{_pango_escape(_group_secondary(sessions, now))}</span>"
+    )
+
+
 def _provider_icon(kind: str) -> str:
     """Resolve a bundled provider icon, with a bundled generic fallback."""
 
@@ -235,8 +572,9 @@ def _refresh_data(
     error_message: str = "",
     *,
     deadline: float | None = None,
+    navigation: NavigationState | None = None,
 ) -> str:
-    """Encode refresh and notice deadlines in Rofi's continuation data."""
+    """Encode refresh, notice, and optional navigation state for Rofi."""
 
     if refresh_deadline is None:
         refresh_deadline = deadline
@@ -249,6 +587,8 @@ def _refresh_data(
             f"{ERROR_NOTICE_DATA_PREFIX}{max(0, int(error_deadline))}"
             f"{':' + encoded_message if encoded_message else ''}"
         )
+    if navigation is not None and not navigation.is_default:
+        values.append(_navigation_data(navigation))
     if not values:
         return AUTO_REFRESH_IDLE_DATA
     return ";".join(values)
@@ -296,6 +636,71 @@ def _parse_error_notice(value: object) -> tuple[float | None, str]:
     return None, ""
 
 
+def _parse_continuation_state(value: object) -> ContinuationState:
+    """Parse current and legacy Rofi continuation components together."""
+
+    refresh_deadline = _parse_refresh_deadline(value)
+    error_deadline, error_message = _parse_error_notice(value)
+    return ContinuationState(
+        navigation=_parse_navigation_state(value),
+        refresh_deadline=refresh_deadline,
+        error_deadline=error_deadline,
+        error_message=error_message,
+    )
+
+
+# Keep a descriptive public spelling for focused callers and tests.
+parse_continuation_state = _parse_continuation_state
+
+
+def _render_continuation(
+    snapshot: Mapping[str, Any] | None,
+    state: ContinuationState,
+    *,
+    navigation: NavigationState | None = None,
+    preserve: bool = False,
+    clear_message: bool = True,
+    continuation: bool = True,
+) -> str:
+    """Render navigation while retaining live refresh/notice state.
+
+    ``ROFI_DATA`` is the only state that survives a script callback.  A
+    navigation transition changes the prompt and rows, but must not silently
+    stop a background worker or lose its bounded error notice.  Expired
+    components are deliberately omitted and a timeout of zero clears Rofi's
+    old timeout/theme when the last continuation has ended.
+    """
+
+    active = state.active()
+    target = navigation or state.navigation
+    if active.error_deadline is not None:
+        message = active.error_message
+    elif active.refresh_deadline is not None:
+        message = "Refreshing in background"
+    else:
+        message = ""
+    if active.has_lifecycle:
+        timeout: bool | None = True
+    elif state.has_lifecycle:
+        # The callback received a continuation, but all its deadlines have
+        # elapsed.  Explicitly clear the old timeout and carry only the new
+        # navigation scope forward.
+        timeout = False
+    else:
+        timeout = None
+    return render_snapshot(
+        snapshot,
+        message=message,
+        preserve=preserve,
+        timeout=timeout,
+        refresh_deadline=active.refresh_deadline,
+        error_deadline=active.error_deadline,
+        clear_message=clear_message,
+        continuation=continuation,
+        navigation=target,
+    )
+
+
 def render_snapshot(
     snapshot: Mapping[str, Any] | None,
     *,
@@ -308,14 +713,15 @@ def render_snapshot(
     refresh_deadline: float | None = None,
     error_deadline: float | None = None,
     clear_message: bool = False,
+    navigation: NavigationState | None = None,
 ) -> str:
     """Render a snapshot as Rofi script headers and rows."""
 
-    rows = snapshot.get("sessions", []) if isinstance(snapshot, Mapping) else []
-    if not isinstance(rows, list):
-        rows = []
+    navigation_was_provided = navigation is not None
+    navigation = navigation or NavigationState()
+    sessions = _valid_sessions(snapshot)
     headers = [
-        _protocol("prompt", "Agents"),
+        _protocol("prompt", _breadcrumb(navigation)),
         _protocol("no-custom", "true"),
         _protocol("use-hot-keys", "true"),
         _protocol("markup-rows", "true"),
@@ -350,50 +756,85 @@ def render_snapshot(
                     refresh_deadline if timeout else None,
                     error_deadline if timeout else None,
                     effective_message if timeout and error_deadline is not None else "",
+                    navigation=navigation,
                 ),
             )
         )
+    elif navigation_was_provided:
+        # Continuation callbacks without a timeout (navigation and opening
+        # failures) still need to carry the active scope to the next callback.
+        # Explicitly emit ``idle`` for Recent so an older nested value cannot
+        # leak across a root transition if Rofi retains the previous data.
+        headers.append(_protocol("data", _refresh_data(navigation=navigation)))
 
     rendered_rows: list[str] = []
     emitted = 0
-    for session in rows:
-        if not isinstance(session, Mapping):
-            continue
-        # JSON ensures selection data is not taken from display text.  Invalid
-        # rows are simply omitted; the status row below keeps Rofi usable.
-        kind = str(session.get("kind") or "")
-        identifier = str(session.get("id") or "")
-        if kind not in PROVIDER_LABELS or not identifier:
-            continue
-        info = selection_payload(session)
-        search_metadata = " ".join(
-            (
-                *(
-                    sanitize(session.get(field) or "")
-                    for field in (
-                        "name",
-                        "kind",
-                        "host",
-                        "windowHost",
-                        "connectHost",
-                        "cwd",
-                        "activityState",
-                    )
-                ),
-                PROVIDER_LABELS[kind],
-                PROVIDER_SEARCH_TERMS[kind],
+    if navigation.nested or navigation.view == "recent":
+        rows = _sessions_for_navigation(sessions, navigation)
+        for session in rows:
+            kind = str(session.get("kind") or "")
+            info = selection_payload(session)
+            search_metadata = " ".join(
+                (
+                    *(
+                        sanitize(session.get(field) or "")
+                        for field in (
+                            "name",
+                            "kind",
+                            "host",
+                            "windowHost",
+                            "connectHost",
+                            "cwd",
+                            "activityState",
+                        )
+                    ),
+                    PROVIDER_LABELS[kind],
+                    PROVIDER_SEARCH_TERMS[kind],
+                )
             )
+            options: list[tuple[str, object]] = [
+                ("info", info),
+                ("meta", search_metadata),
+                ("icon", _provider_icon(kind)),
+                ("display", _row_display(session, now)),
+            ]
+            if session.get("active"):
+                options.append(("active", "true"))
+            rendered_rows.append(_row_text(session, now) + _row_options(options))
+            emitted += 1
+    else:
+        groups = (
+            _host_groups(sessions) if navigation.view == "hosts" else _provider_groups(sessions)
         )
-        options: list[tuple[str, object]] = [
-            ("info", info),
-            ("meta", search_metadata),
-            ("icon", _provider_icon(kind)),
-            ("display", _row_display(session, now)),
-        ]
-        if session.get("active"):
-            options.append(("active", "true"))
-        rendered_rows.append(_row_text(session, now) + _row_options(options))
-        emitted += 1
+        for group in groups:
+            group_type = str(group["groupType"])
+            value = str(group["value"])
+            label = sanitize(group.get("label") or value)
+            info = json.dumps(
+                {
+                    "type": "group",
+                    "groupType": group_type,
+                    "value": value,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            if group_type == "provider":
+                search_metadata = " ".join(
+                    (label, value, PROVIDER_LABELS[value], PROVIDER_SEARCH_TERMS[value])
+                )
+                icon = _provider_icon(value)
+            else:
+                search_metadata = " ".join((label, "host", "hosts"))
+                icon = _provider_icon("unknown")
+            options = [
+                ("info", info),
+                ("meta", search_metadata),
+                ("icon", icon),
+                ("display", _group_display(group, now)),
+            ]
+            rendered_rows.append(label + _row_options(options))
+            emitted += 1
 
     if emitted == 0:
         status = "No agent sessions found"
@@ -437,6 +878,83 @@ def _parse_selection(raw: str | None) -> dict[str, Any]:
     elif not engine.OPENCODE_ID_PATTERN.fullmatch(identifier):
         raise engine.PickerError("Rofi selection contains an invalid session id")
     return payload
+
+
+def _parse_group_selection(raw: str | None) -> dict[str, Any]:
+    if not raw:
+        raise engine.PickerError("Rofi did not provide a group selection")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise engine.PickerError("Rofi group metadata is invalid") from exc
+    if not isinstance(payload, dict) or payload.get("type") != "group":
+        raise engine.PickerError("Rofi group metadata is incomplete")
+    group_type = payload.get("groupType")
+    value = payload.get("value")
+    if (
+        not isinstance(group_type, str)
+        or group_type not in {"host", "provider"}
+        or not isinstance(value, str)
+        or not value
+    ):
+        raise engine.PickerError("Rofi group metadata is incomplete")
+    if any(char in value for char in "\x00\n\r\t") or len(value) > 256:
+        raise engine.PickerError("Rofi group contains invalid text")
+    if group_type == "provider" and value not in PROVIDER_LABELS:
+        raise engine.PickerError("Rofi group contains an invalid provider")
+    return payload
+
+
+def _parse_row_selection(raw: str | None) -> tuple[str, dict[str, Any]]:
+    """Parse typed row metadata without ever deriving identity from display text."""
+
+    if raw:
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict) and payload.get("type") == "group":
+            return "group", _parse_group_selection(raw)
+    return "session", _parse_selection(raw)
+
+
+def _enter_group(
+    navigation: NavigationState,
+    group: Mapping[str, Any],
+    snapshot: Mapping[str, Any] | None,
+) -> NavigationState:
+    """Validate a selected root group against the current snapshot."""
+
+    group_type = group.get("groupType")
+    value = group.get("value")
+    if (
+        navigation.nested
+        or not isinstance(group_type, str)
+        or group_type
+        not in {
+            "host",
+            "provider",
+        }
+    ):
+        raise engine.PickerError("selected group is not available in this view")
+    if group_type == "host" and navigation.view != "hosts":
+        raise engine.PickerError("selected host is not available in this view")
+    if group_type == "provider" and navigation.view != "providers":
+        raise engine.PickerError("selected provider is not available in this view")
+    sessions = _valid_sessions(snapshot)
+    groups = _host_groups(sessions) if group_type == "host" else _provider_groups(sessions)
+    if not any(item.get("value") == value for item in groups):
+        raise engine.PickerError("selected group is no longer available")
+    return NavigationState(navigation.view, group_type, value)
+
+
+def _cycled_root(navigation: NavigationState, direction: int) -> NavigationState:
+    views = ("recent", "hosts", "providers")
+    try:
+        index = views.index(navigation.view)
+    except ValueError:
+        index = 0
+    return NavigationState(views[(index + direction) % len(views)])
 
 
 def _open_selection(
@@ -504,7 +1022,9 @@ def _render_error_notice(
     *,
     preserve: bool = False,
     continuation: bool = False,
+    refresh_deadline: float | None = None,
     error_deadline: float | None = None,
+    navigation: NavigationState | None = None,
 ) -> str:
     """Render a user-visible error with a bounded, self-clearing timeout."""
 
@@ -513,9 +1033,11 @@ def _render_error_notice(
         message=message,
         preserve=preserve,
         timeout=True,
+        refresh_deadline=refresh_deadline,
         error_deadline=error_deadline or time.time() + ERROR_NOTICE_SECONDS,
         clear_message=True,
         continuation=continuation,
+        navigation=navigation,
     )
 
 
@@ -546,7 +1068,11 @@ def _auto_refresh_callback(
 
     snapshot = store.load(config.fingerprint)
     fresh = snapshot is not None and store.is_fresh(snapshot, config.refresh_seconds)
-    error_deadline, error_message = _parse_error_notice(environ.get("ROFI_DATA"))
+    rofi_data = environ.get("ROFI_DATA")
+    continuation_state = _parse_continuation_state(rofi_data)
+    navigation = continuation_state.navigation
+    error_deadline = continuation_state.error_deadline
+    error_message = continuation_state.error_message
     now = time.time()
     if fresh:
         errors = summarize_errors(snapshot.get("errors", []))
@@ -562,6 +1088,7 @@ def _auto_refresh_callback(
                     timeout=False,
                     clear_message=True,
                     continuation=True,
+                    navigation=navigation,
                 )
             if error_deadline is None or error_message != errors:
                 error_deadline = now + ERROR_NOTICE_SECONDS
@@ -574,6 +1101,7 @@ def _auto_refresh_callback(
                     error_deadline=error_deadline,
                     clear_message=True,
                     continuation=True,
+                    navigation=navigation,
                 )
             return render_snapshot(
                 snapshot,
@@ -581,6 +1109,7 @@ def _auto_refresh_callback(
                 timeout=False,
                 clear_message=True,
                 continuation=True,
+                navigation=navigation,
             )
 
         # Foreground operation failures carry their message in continuation
@@ -595,6 +1124,7 @@ def _auto_refresh_callback(
                 error_deadline=error_deadline,
                 clear_message=True,
                 continuation=True,
+                navigation=navigation,
             )
         return render_snapshot(
             snapshot,
@@ -602,9 +1132,10 @@ def _auto_refresh_callback(
             timeout=False,
             clear_message=True,
             continuation=True,
+            navigation=navigation,
         )
 
-    deadline = _parse_refresh_deadline(environ.get("ROFI_DATA"))
+    deadline = continuation_state.refresh_deadline
     timed_out = deadline is not None and now >= deadline
     marker_active = not timed_out and store.background_active(max_age=AUTO_REFRESH_MAX_SECONDS)
     if marker_active:
@@ -626,6 +1157,7 @@ def _auto_refresh_callback(
             refresh_deadline=deadline,
             error_deadline=error_deadline if notice_active else None,
             continuation=True,
+            navigation=navigation,
         )
 
     # The worker writes the snapshot before removing its marker.  If both
@@ -640,6 +1172,7 @@ def _auto_refresh_callback(
                 latest_message,
                 preserve=True,
                 continuation=True,
+                navigation=navigation,
             )
         return render_snapshot(
             latest,
@@ -647,6 +1180,7 @@ def _auto_refresh_callback(
             timeout=False,
             clear_message=True,
             continuation=True,
+            navigation=navigation,
         )
 
     if error_deadline is not None and now < error_deadline and error_message:
@@ -658,6 +1192,7 @@ def _auto_refresh_callback(
             error_deadline=error_deadline,
             clear_message=True,
             continuation=True,
+            navigation=navigation,
         )
     return render_snapshot(
         snapshot,
@@ -665,6 +1200,7 @@ def _auto_refresh_callback(
         timeout=False,
         clear_message=True,
         continuation=True,
+        navigation=navigation,
     )
 
 
@@ -700,28 +1236,47 @@ def run_rofi(
     except ValueError:
         retv = 0
 
+    continuation_state = _parse_continuation_state(environ.get("ROFI_DATA"))
+    navigation = continuation_state.navigation
     store = store or CacheStore()
     try:
         config = config or load_config()
     except ConfigError as exc:
         if retv == ROFI_RETV_CUSTOM_19:
-            deadline, message = _parse_error_notice(environ.get("ROFI_DATA"))
             now = time.time()
-            if deadline is not None and now >= deadline:
+            active = continuation_state.active(now)
+            if (
+                continuation_state.error_deadline is not None
+                and continuation_state.error_deadline <= now
+            ):
+                # Preserve the old bounded-notice contract: once its deadline
+                # has elapsed, clear it rather than starting another notice
+                # merely because config loading still fails.  A still-live
+                # background worker remains visible and keeps its poll alive.
                 rendered = render_snapshot(
                     None,
+                    message="Refreshing in background" if active.refresh_deadline else "",
                     preserve=True,
-                    timeout=False,
+                    timeout=True if active.refresh_deadline else False,
+                    refresh_deadline=active.refresh_deadline,
                     clear_message=True,
                     continuation=True,
+                    navigation=navigation,
                 )
             else:
+                # A config failure is a new operation error.  Do not let an
+                # unrelated active refresh (or its old notice text) hide it;
+                # carry the refresh deadline alongside a fresh bounded notice.
                 rendered = _render_error_notice(
                     None,
-                    message or str(exc),
+                    str(exc)
+                    if active.refresh_deadline
+                    else (continuation_state.error_message or str(exc)),
                     preserve=True,
                     continuation=True,
-                    error_deadline=deadline,
+                    refresh_deadline=active.refresh_deadline,
+                    error_deadline=active.error_deadline,
+                    navigation=navigation,
                 )
         else:
             rendered = _render_error_notice(
@@ -729,6 +1284,8 @@ def run_rofi(
                 str(exc),
                 preserve=retv != 0,
                 continuation=retv != 0,
+                refresh_deadline=continuation_state.active().refresh_deadline,
+                navigation=navigation,
             )
         print(rendered, end="")
         return 0
@@ -753,6 +1310,7 @@ def run_rofi(
                 selected=selected,
                 preserve=True,
                 continuation=True,
+                navigation=navigation,
             ),
             end="",
         )
@@ -760,23 +1318,139 @@ def run_rofi(
 
     if retv == ROFI_RETV_SELECTED:
         selected: dict[str, Any] | None = None
+        row_type = "session"
         try:
-            selected = _parse_selection(environ.get("ROFI_INFO"))
+            row_type, selected = _parse_row_selection(environ.get("ROFI_INFO"))
+            if row_type == "group":
+                snapshot = store.load(config.fingerprint)
+                next_navigation = _enter_group(navigation, selected, snapshot)
+                print(
+                    _render_continuation(
+                        snapshot,
+                        continuation_state,
+                        navigation=next_navigation,
+                    ),
+                    end="",
+                )
+                return 0
             _open_selection(selected, config)
             # No rows means Rofi closes after a successful action.
             return 0
         except (engine.PickerError, OSError, subprocess.SubprocessError) as exc:
             snapshot = store.load(config.fingerprint)
+            operation = "open session" if row_type == "session" else "navigate"
+            print(
+                _render_error_notice(
+                    snapshot,
+                    message=f"Unable to {operation}: {sanitize(exc)}",
+                    preserve=True,
+                    continuation=True,
+                    refresh_deadline=continuation_state.active().refresh_deadline,
+                    navigation=navigation,
+                ),
+                end="",
+            )
+            return 0
+
+    if retv == ROFI_RETV_CUSTOM_2:
+        # Right is an explicit drill/open action.  A missing selection (for
+        # example, the empty status row) is a harmless no-op that retains the
+        # current filter and cursor.
+        snapshot = store.load(config.fingerprint)
+        raw_selection = environ.get("ROFI_INFO")
+        try:
+            row_type, selected = _parse_row_selection(raw_selection)
+        except engine.PickerError:
+            print(
+                _render_continuation(
+                    snapshot,
+                    continuation_state,
+                    preserve=True,
+                    navigation=navigation,
+                ),
+                end="",
+            )
+            return 0
+        if row_type == "group":
+            try:
+                next_navigation = _enter_group(navigation, selected, snapshot)
+            except engine.PickerError as exc:
+                print(
+                    _render_error_notice(
+                        snapshot,
+                        message=f"Unable to navigate: {sanitize(exc)}",
+                        preserve=True,
+                        continuation=True,
+                        refresh_deadline=continuation_state.active().refresh_deadline,
+                        navigation=navigation,
+                    ),
+                    end="",
+                )
+                return 0
+            print(
+                _render_continuation(
+                    snapshot,
+                    continuation_state,
+                    navigation=next_navigation,
+                ),
+                end="",
+            )
+            return 0
+        try:
+            _open_selection(selected, config)
+        except (engine.PickerError, OSError, subprocess.SubprocessError) as exc:
             print(
                 _render_error_notice(
                     snapshot,
                     message=f"Unable to open session: {sanitize(exc)}",
                     preserve=True,
                     continuation=True,
+                    refresh_deadline=continuation_state.active().refresh_deadline,
+                    navigation=navigation,
                 ),
                 end="",
             )
-            return 0
+        return 0
+
+    if retv == ROFI_RETV_CUSTOM_3:
+        snapshot = store.load(config.fingerprint)
+        if navigation.nested:
+            # Returning to a root is a navigation transition, so clear the
+            # filter and selection while retaining the current view lens.
+            print(
+                _render_continuation(
+                    snapshot,
+                    continuation_state,
+                    navigation=navigation.root(),
+                ),
+                end="",
+            )
+        else:
+            # Left at a root has no parent.  Keep the list usable and retain
+            # the user's current filter/selection.
+            print(
+                _render_continuation(
+                    snapshot,
+                    continuation_state,
+                    preserve=True,
+                    navigation=navigation,
+                ),
+                end="",
+            )
+        return 0
+
+    if retv in {ROFI_RETV_CUSTOM_4, ROFI_RETV_CUSTOM_5}:
+        direction = 1 if retv == ROFI_RETV_CUSTOM_4 else -1
+        snapshot = store.load(config.fingerprint)
+        print(
+            _render_continuation(
+                snapshot,
+                continuation_state,
+                navigation=_cycled_root(navigation, direction),
+            ),
+            end="",
+        )
+        return 0
 
     if retv == ROFI_RETV_CUSTOM_19:
         print(_auto_refresh_callback(environ, store, config), end="")
@@ -801,6 +1475,8 @@ def run_rofi(
                         message,
                         preserve=True,
                         continuation=True,
+                        refresh_deadline=continuation_state.active().refresh_deadline,
+                        navigation=navigation,
                     ),
                     end="",
                 )
@@ -819,6 +1495,8 @@ def run_rofi(
                         message,
                         preserve=True,
                         continuation=True,
+                        refresh_deadline=continuation_state.active().refresh_deadline,
+                        navigation=navigation,
                     ),
                     end="",
                 )
@@ -832,6 +1510,7 @@ def run_rofi(
                     refresh_deadline=deadline,
                     clear_message=True,
                     continuation=True,
+                    navigation=navigation,
                 ),
                 end="",
             )
@@ -843,6 +1522,8 @@ def run_rofi(
                     message=f"Refresh failed: {sanitize(exc)}",
                     preserve=True,
                     continuation=True,
+                    refresh_deadline=continuation_state.active().refresh_deadline,
+                    navigation=navigation,
                 ),
                 end="",
             )
@@ -856,7 +1537,12 @@ def run_rofi(
             snapshot = store.refresh(config)
         except (engine.PickerError, OSError, subprocess.SubprocessError) as exc:
             print(
-                _render_error_notice(None, f"Refresh failed: {sanitize(exc)}"),
+                _render_error_notice(
+                    None,
+                    f"Refresh failed: {sanitize(exc)}",
+                    refresh_deadline=continuation_state.active().refresh_deadline,
+                    navigation=navigation,
+                ),
                 end="",
             )
             return 0
@@ -872,9 +1558,9 @@ def run_rofi(
                 if latest is not None and store.is_fresh(latest, config.refresh_seconds):
                     latest_message = summarize_errors(latest.get("errors", []))
                     print(
-                        _render_error_notice(latest, latest_message)
+                        _render_error_notice(latest, latest_message, navigation=navigation)
                         if latest_message
-                        else render_snapshot(latest),
+                        else render_snapshot(latest, navigation=navigation),
                         end="",
                     )
                     return 0
@@ -884,7 +1570,7 @@ def run_rofi(
                 else summarize_errors(snapshot.get("errors", []))
             )
             if not polling and message:
-                print(_render_error_notice(snapshot, message), end="")
+                print(_render_error_notice(snapshot, message, navigation=navigation), end="")
                 return 0
             print(
                 render_snapshot(
@@ -892,13 +1578,14 @@ def run_rofi(
                     message=message,
                     timeout=True if polling else None,
                     refresh_deadline=refresh_deadline,
+                    navigation=navigation,
                 ),
                 end="",
             )
             return 0
     message = _message_for_cache(store, snapshot, config)
     if message:
-        print(_render_error_notice(snapshot, message), end="")
+        print(_render_error_notice(snapshot, message, navigation=navigation), end="")
     else:
-        print(render_snapshot(snapshot), end="")
+        print(render_snapshot(snapshot, navigation=navigation), end="")
     return 0

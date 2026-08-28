@@ -2,8 +2,8 @@
 
 `rofi-agent-picker` is a standalone Rofi script-mode picker for Codex CLI,
 Claude Code, and OpenCode sessions.  It ports the discovery and tmux-opening
-engine from DMS Agent Picker while keeping Rofi responsible only for the flat,
-searchable presentation.
+engine from DMS Agent Picker while keeping Rofi responsible for the searchable
+presentation and navigation.
 
 Version `0.1.0` supports Python 3.11+ and has no runtime package dependencies.
 The current core contract requires Python 3, the Codex CLI, SSH, tmux, and a
@@ -19,15 +19,29 @@ The executable can be run directly from a checkout:
 ```sh
 ./bin/rofi-agent-picker list | jq
 rofi -show agent -modes "agent:$(pwd)/bin/rofi-agent-picker" \
-  -kb-custom-1 Alt+r -eh 2
+  -kb-custom-1 Alt+r -kb-custom-2 Right -kb-custom-3 Left \
+  -kb-custom-4 Tab -kb-custom-5 ISO_Left_Tab \
+  -kb-move-char-forward Control+f -kb-move-char-back Control+b \
+  -kb-element-next "" -kb-element-prev "" -eh 2
 ```
 
 The normal Rofi invocation is configured as a script mode.  `Mod+A` or a
-similar Niri binding can invoke it with `rofi -show agent`.  The prompt is
-`Agents`; Rofi's normal arrow-key navigation, filtering, and Enter selection
-remain available.  `Alt+R` performs a bounded foreground refresh.  Custom
-input and deletion are disabled in this flat v0.1 UI.  Rofi must be launched
-with `-eh 2` so each list element reserves height for both display lines.
+similar Niri binding can invoke it with `rofi -show agent`.  The picker opens
+in `Agents › Recent`, a mixed newest-first list.  `Tab` and `Shift+Tab` cycle
+the top-level `Recent`, `Hosts`, and `Providers` views; `Enter` or `Right`
+opens a host/provider group and then opens a session, while `Left` returns to a
+view root.  Navigation transitions clear the filter and selection.  `Alt+R`
+performs a bounded foreground refresh.  Custom input and deletion remain
+disabled.  Rofi must be launched with `-eh 2` so each list element reserves
+height for both display lines.
+
+The `Hosts` view groups sessions by their logical displayed host and orders
+hosts by the newest session they contain.  The `Providers` view uses the
+stable Codex, Claude Code, and OpenCode order and omits empty providers.
+Group rows show the session count, any active count, and newest age.  Their
+metadata is typed JSON, so opening a session never depends on parsing visible
+text.  Breadcrumb prompts identify the current root or nested group, for
+example `Agents › Hosts › workstation` or `Agents › Providers › Codex`.
 
 Rows use a two-line layout: the session title is primary, while a smaller
 secondary line shows the display host, shortened working directory, age, and
@@ -116,7 +130,6 @@ and the Niri binding.  DMS remains responsible for the bar, notifications,
 idle handling, lock screen, polkit, and the general Spotlight launcher.
 
 The former DMS Agent Picker repository is retained for compatibility and
-history, but is deprecated; new picker behavior belongs here.  The flat Rofi
-presentation intentionally keeps layered navigation, project scoping, and
-synthetic-session cleanup out of scope until they have a separately reviewed
-design.
+history, but is deprecated; new picker behavior belongs here.  Project
+scoping and synthetic-session cleanup remain out of scope until they have a
+separately reviewed design.
