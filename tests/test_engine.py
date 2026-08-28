@@ -380,7 +380,7 @@ class MergeHostResultsTest(unittest.TestCase):
         result = picker.merge_host_results(
             [
                 (
-                    picker.HostTarget("snap.lan"),
+                    picker.HostTarget("workstation.example"),
                     picker.PickerError("codex unavailable"),
                     {
                         "installed": True,
@@ -396,7 +396,7 @@ class MergeHostResultsTest(unittest.TestCase):
                     },
                     EMPTY_OPCODE,
                     {
-                        "host": "80H1VV3",
+                        "host": "LEGACY-HOST",
                         "active": {},
                         "claudeActive": {THREAD_C: {"pid": 42, "tmuxSession": "improve-auth-flow"}},
                         "opencodeActive": {},
@@ -404,7 +404,7 @@ class MergeHostResultsTest(unittest.TestCase):
                 )
             ],
             limit=20,
-            aliases={"80h1vv3": "snap"},
+            aliases={"legacy-host": "workstation"},
         )
 
         self.assertEqual(
@@ -413,9 +413,9 @@ class MergeHostResultsTest(unittest.TestCase):
                 "id": THREAD_C,
                 "name": "Improve auth flow",
                 "cwd": "/home/test/code/app",
-                "host": "snap",
-                "windowHost": "80H1VV3",
-                "connectHost": "snap.lan",
+                "host": "workstation",
+                "windowHost": "LEGACY-HOST",
+                "connectHost": "workstation.example",
                 "recencyAt": 80,
                 "updatedAt": 80,
                 "active": True,
@@ -754,7 +754,7 @@ class ClaudeSessionTest(unittest.TestCase):
                 picker,
                 "get_active_snapshot",
                 return_value={
-                    "host": "80H1VV3",
+                    "host": "LEGACY-HOST",
                     "active": {},
                     "claudeInstalled": True,
                     "claudeActive": {THREAD_C: {"pid": 42, "tmuxSession": "auth-flow"}},
@@ -763,7 +763,7 @@ class ClaudeSessionTest(unittest.TestCase):
             mock.patch.object(picker, "ensure_claude_tmux_session") as ensure,
         ):
             session = picker.resolve_claude_open_target(
-                picker.HostTarget("snap.lan"),
+                picker.HostTarget("workstation.example"),
                 THREAD_C,
                 "Improve auth flow",
                 "/home/test/code/app",
@@ -962,24 +962,24 @@ class NiriWindowTest(unittest.TestCase):
         windows = [
             {
                 "id": 42,
-                "title": "desktop-config:0 codex | bryan @ 80H1VV3",
+                "title": "desktop-config:0 codex | bryan @ LEGACY-HOST",
             }
         ]
 
         self.assertEqual(
             42,
-            picker._matching_niri_window_id(windows, "desktop-config", "80h1vv3.lan"),
+            picker._matching_niri_window_id(windows, "desktop-config", "legacy-host.example"),
         )
 
     def test_rejects_same_session_on_another_host(self) -> None:
         windows = [
             {
                 "id": 42,
-                "title": "cubey:0 codex | cubey @ starship",
+                "title": "cubey:0 codex | cubey @ desktop",
             }
         ]
 
-        self.assertIsNone(picker._matching_niri_window_id(windows, "cubey", "carbon"))
+        self.assertIsNone(picker._matching_niri_window_id(windows, "cubey", "laptop"))
 
 
 class HostConfigTest(unittest.TestCase):
@@ -1001,31 +1001,33 @@ class HostConfigTest(unittest.TestCase):
 
     def test_parses_case_insensitive_alias_source(self) -> None:
         self.assertEqual(
-            {"80h1vv3": "snap"},
-            picker.parse_host_aliases(["80H1VV3=snap"]),
+            {"legacy-host": "workstation"},
+            picker.parse_host_aliases(["LEGACY-HOST=workstation"]),
         )
 
     def test_rejects_invalid_alias(self) -> None:
         with self.assertRaisesRegex(picker.PickerError, "expected source=display"):
-            picker.parse_host_aliases(["snap"])
+            picker.parse_host_aliases(["workstation"])
 
     def test_parses_logical_route_with_fallback_paths(self) -> None:
         self.assertEqual(
             [
                 picker.HostTarget(
-                    "snap.wg.lan",
-                    route_key="snap",
-                    route_paths=("snap.wg.lan", "snap.lan"),
+                    "workstation-vpn.example",
+                    route_key="workstation",
+                    route_paths=("workstation-vpn.example", "workstation.example"),
                 )
             ],
-            picker.parse_host_routes(["snap=snap.wg.lan|snap.lan"]),
+            picker.parse_host_routes(["workstation=workstation-vpn.example|workstation.example"]),
         )
 
     def test_rejects_invalid_or_duplicate_logical_routes(self) -> None:
         with self.assertRaisesRegex(picker.PickerError, "expected name=endpoint"):
-            picker.parse_host_routes(["snap"])
+            picker.parse_host_routes(["workstation"])
         with self.assertRaisesRegex(picker.PickerError, "duplicate host route"):
-            picker.parse_host_routes(["snap=snap.wg.lan,snap=snap.lan"])
+            picker.parse_host_routes(
+                ["workstation=workstation-vpn.example,workstation=workstation.example"]
+            )
 
     def test_rejects_hosts_and_endpoints_starting_with_dash(self) -> None:
         with self.assertRaisesRegex(picker.PickerError, "invalid host"):
@@ -1033,10 +1035,12 @@ class HostConfigTest(unittest.TestCase):
         with self.assertRaisesRegex(picker.PickerError, "invalid host"):
             picker.build_host_targets(["-oProxyCommand=evil"], include_local=False)
         with self.assertRaisesRegex(picker.PickerError, "invalid host route endpoint"):
-            picker.parse_host_routes(["snap=-oProxyCommand=evil"])
+            picker.parse_host_routes(["workstation=-oProxyCommand=evil"])
 
     def test_uses_first_reachable_route_path(self) -> None:
-        route = picker.parse_host_routes(["snap=snap.wg.lan|snap.lan"])[0]
+        route = picker.parse_host_routes(
+            ["workstation=workstation-vpn.example|workstation.example"]
+        )[0]
         with mock.patch.object(
             picker.subprocess,
             "run",
@@ -1047,17 +1051,19 @@ class HostConfigTest(unittest.TestCase):
         ) as run:
             resolved = picker.resolve_host_target(route, picker.SshPolicy())
 
-        self.assertEqual("snap", resolved.key)
-        self.assertEqual("snap.lan", resolved.connect_host)
-        self.assertEqual("snap=snap.wg.lan|snap.lan", resolved.route_spec)
-        self.assertEqual("snap.wg.lan", run.call_args_list[0].args[0][-2])
-        self.assertEqual("snap.lan", run.call_args_list[1].args[0][-2])
+        self.assertEqual("workstation", resolved.key)
+        self.assertEqual("workstation.example", resolved.connect_host)
+        self.assertEqual(
+            "workstation=workstation-vpn.example|workstation.example", resolved.route_spec
+        )
+        self.assertEqual("workstation-vpn.example", run.call_args_list[0].args[0][-2])
+        self.assertEqual("workstation.example", run.call_args_list[1].args[0][-2])
 
     def test_route_results_keep_logical_name_and_reconnect_spec(self) -> None:
         route = picker.HostTarget(
-            "snap.lan",
-            route_key="snap",
-            route_paths=("snap.wg.lan", "snap.lan"),
+            "workstation.example",
+            route_key="workstation",
+            route_paths=("workstation-vpn.example", "workstation.example"),
         )
         result = picker.merge_host_results(
             [
@@ -1066,16 +1072,16 @@ class HostConfigTest(unittest.TestCase):
                     [{"id": THREAD_A, "name": "dotfiles", "cwd": "/home/test"}],
                     {"installed": False, "sessions": []},
                     EMPTY_OPCODE,
-                    {"host": "80H1VV3", "active": {}, "opencodeActive": {}},
+                    {"host": "LEGACY-HOST", "active": {}, "opencodeActive": {}},
                 )
             ],
             limit=20,
         )
 
-        self.assertEqual("snap", result["sessions"][0]["host"])
-        self.assertEqual("snap.lan", result["sessions"][0]["connectHost"])
+        self.assertEqual("workstation", result["sessions"][0]["host"])
+        self.assertEqual("workstation.example", result["sessions"][0]["connectHost"])
         self.assertEqual(
-            "snap=snap.wg.lan|snap.lan",
+            "workstation=workstation-vpn.example|workstation.example",
             result["sessions"][0]["route"],
         )
 
@@ -1083,23 +1089,23 @@ class HostConfigTest(unittest.TestCase):
         result = picker.merge_host_results(
             [
                 (
-                    picker.HostTarget("snap.lan"),
+                    picker.HostTarget("workstation.example"),
                     [{"id": THREAD_A, "name": "dotfiles", "cwd": "/home/test"}],
                     {"installed": False, "sessions": []},
                     EMPTY_OPCODE,
-                    {"host": "80H1VV3", "active": {}, "opencodeActive": {}},
+                    {"host": "LEGACY-HOST", "active": {}, "opencodeActive": {}},
                 )
             ],
             limit=20,
-            aliases={"80h1vv3": "snap"},
+            aliases={"legacy-host": "workstation"},
         )
 
-        self.assertEqual("snap", result["sessions"][0]["host"])
-        self.assertEqual("80H1VV3", result["sessions"][0]["windowHost"])
+        self.assertEqual("workstation", result["sessions"][0]["host"])
+        self.assertEqual("LEGACY-HOST", result["sessions"][0]["windowHost"])
 
     def test_shared_host_list_skips_local_alias(self) -> None:
         with (
-            mock.patch.object(picker.socket, "gethostname", return_value="80H1VV3"),
+            mock.patch.object(picker.socket, "gethostname", return_value="LEGACY-HOST"),
             mock.patch.object(picker, "list_codex_threads", return_value=[]),
             mock.patch.object(
                 picker,
@@ -1122,25 +1128,27 @@ class HostConfigTest(unittest.TestCase):
             ) as active,
         ):
             picker.aggregate_sessions(
-                ["starship.lan", "snap.lan", "carbon.lan"],
+                ["desktop.example", "workstation.example", "laptop.example"],
                 limit=20,
                 timeout=1.0,
-                aliases={"80h1vv3": "snap"},
+                aliases={"legacy-host": "workstation"},
             )
 
         queried_hosts = {call.args[0].key for call in active.call_args_list}
-        self.assertEqual({"local", "starship.lan", "carbon.lan"}, queried_hosts)
+        self.assertEqual({"local", "desktop.example", "laptop.example"}, queried_hosts)
 
     def test_routes_skip_the_current_logical_host(self) -> None:
-        routes = picker.parse_host_routes(["snap=snap.wg.lan|snap.lan", "starship=starship.lan"])
-        with mock.patch.object(picker.socket, "gethostname", return_value="80H1VV3"):
+        routes = picker.parse_host_routes(
+            ["workstation=workstation-vpn.example|workstation.example", "desktop=desktop.example"]
+        )
+        with mock.patch.object(picker.socket, "gethostname", return_value="LEGACY-HOST"):
             targets = picker.build_host_targets(
                 [],
-                aliases={"80h1vv3": "snap"},
+                aliases={"legacy-host": "workstation"},
                 routes=routes,
             )
 
-        self.assertEqual(["local", "starship"], [target.key for target in targets])
+        self.assertEqual(["local", "desktop"], [target.key for target in targets])
 
 
 class OpencodeSessionTest(unittest.TestCase):

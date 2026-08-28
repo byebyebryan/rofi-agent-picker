@@ -1,7 +1,7 @@
 # Optional.  Without this file the picker queries the local host only.
 hosts = ["laptop.lan"]
-host_routes = ["snap=snap.wg.lan|snap.lan"]
-aliases = ["80h1vv3=snap"]
+host_routes = ["workstation=workstation-vpn.example|workstation.example"]
+aliases = ["legacy-host=workstation"]
 terminal = "ghostty"
 max_sessions = 40
 refresh_seconds = 30

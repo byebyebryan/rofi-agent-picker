@@ -50,9 +50,9 @@ def session(
         "id": identifier,
         "name": "hello\nworld\x00",
         "cwd": "/home/bryan/code/project",
-        "host": "snap",
-        "windowHost": "snap.wg.lan",
-        "connectHost": "snap.wg.lan",
+        "host": "workstation",
+        "windowHost": "workstation-vpn.example",
+        "connectHost": "workstation-vpn.example",
         "recencyAt": 100,
         "updatedAt": 100,
         "active": False,
@@ -101,23 +101,27 @@ class ConfigTest(unittest.TestCase):
             path = Path(temporary) / "config.toml"
             path.write_text(
                 'hosts = ["ignored.lan"]\n'
-                'host_routes = ["snap=snap.wg.lan|snap.lan"]\n'
-                'aliases = ["80H1VV3=Snap"]\n'
+                'host_routes = ["workstation=workstation-vpn.example|workstation.example"]\n'
+                'aliases = ["LEGACY-HOST=Workstation"]\n'
                 'terminal = "foot --class agent"\n'
                 "max_sessions = 12\nrefresh_seconds = 60\n"
                 "ssh_connect_timeout = 3\nssh_connection_attempts = 2\n"
             )
             config = load_config(path)
         self.assertEqual(("ignored.lan",), config.hosts)
-        self.assertEqual(("snap=snap.wg.lan|snap.lan",), config.host_routes)
-        self.assertEqual("Snap", config.aliases["80h1vv3"])
+        self.assertEqual(
+            ("workstation=workstation-vpn.example|workstation.example",), config.host_routes
+        )
+        self.assertEqual("Workstation", config.aliases["legacy-host"])
         self.assertEqual("foot --class agent", config.terminal)
-        self.assertEqual(("snap.wg.lan", "snap.lan"), config.routes[0].route_paths)
+        self.assertEqual(
+            ("workstation-vpn.example", "workstation.example"), config.routes[0].route_paths
+        )
 
     def test_rejects_unknown_keys_wrong_types_and_bounds(self) -> None:
         for text in (
             "mystery = true\n",
-            'hosts = "snap"\n',
+            'hosts = "workstation"\n',
             "max_sessions = 0\n",
             "refresh_seconds = 301\n",
             "ssh_connect_timeout = true\n",
@@ -178,7 +182,7 @@ class ConfigTest(unittest.TestCase):
             original.with_overrides(terminal="foot", refresh_seconds=60).fingerprint,
         )
         self.assertNotEqual(
-            original.fingerprint, original.with_overrides(hosts=["snap"]).fingerprint
+            original.fingerprint, original.with_overrides(hosts=["workstation"]).fingerprint
         )
 
 
@@ -385,7 +389,7 @@ class RofiProtocolTest(unittest.TestCase):
         display = options["display"]
         self.assertIn(f"<b>hello world</b>{ROW_SEPARATOR}", display)
         self.assertIn('<span size="smaller" alpha="75%">', display)
-        self.assertIn("snap  ·  ~/code/project  ·  0s  ·  active", display)
+        self.assertIn("workstation  ·  ~/code/project  ·  0s  ·  active", display)
         decoded = json.loads(options["info"])
         self.assertEqual(THREAD_ID, decoded["id"])
 

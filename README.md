@@ -49,8 +49,8 @@ are in [`examples/config.toml`](examples/config.toml):
 
 ```toml
 hosts = ["laptop.lan"]
-host_routes = ["snap=snap.wg.lan|snap.lan"]
-aliases = ["80h1vv3=snap"]
+host_routes = ["workstation=workstation-vpn.example|workstation.example"]
+aliases = ["legacy-host=workstation"]
 terminal = "ghostty"
 max_sessions = 40
 refresh_seconds = 30
@@ -94,7 +94,7 @@ The same executable has a JSON CLI when called without `ROFI_RETV`:
 
 ```sh
 ./bin/rofi-agent-picker list --limit 40
-./bin/rofi-agent-picker list --route 'snap=snap.wg.lan|snap.lan' --stream
+./bin/rofi-agent-picker list --route 'workstation=workstation-vpn.example|workstation.example' --stream
 ./bin/rofi-agent-picker active
 ./bin/rofi-agent-picker open --host local --id UUID --name project --cwd "$PWD" --detach
 ./bin/rofi-agent-picker open-claude --host local --id UUID --detach
