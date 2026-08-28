@@ -24,6 +24,7 @@ ROFI_RETV_CUSTOM_1 = 10
 MAX_MESSAGE_LENGTH = 360
 FORCED_REFRESH_TIMEOUT_SECONDS = 30
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+_DISPLAY_CONTROL_CHARS = re.compile(r"[\x00-\x09\x0b-\x1f\x7f]")
 
 PROVIDER_LABELS = {
     "codex": "Codex",
@@ -40,7 +41,9 @@ PROVIDER_ICON_PATHS = {
     for kind in PROVIDER_LABELS
 }
 FALLBACK_ICON_PATH = Path(__file__).resolve().parent / "assets" / "providers" / "generic.svg"
-ROW_SEPARATOR = "\u2028"
+ROW_SEPARATOR = "\n"
+ROFI_RECORD_SEPARATOR = "\t"
+ROFI_DELIMITER_VALUE = r"\t"
 
 
 def sanitize(value: object) -> str:
@@ -59,7 +62,12 @@ def _row_options(options: Sequence[tuple[str, object]]) -> str:
 
     fields: list[str] = []
     for key, value in options:
-        fields.extend((sanitize(key), sanitize(value)))
+        encoded_value = (
+            _DISPLAY_CONTROL_CHARS.sub(" ", str(value)).strip()
+            if key == "display"
+            else sanitize(value)
+        )
+        fields.extend((sanitize(key), encoded_value))
     return "\0" + "\x1f".join(fields) if fields else ""
 
 
@@ -204,13 +212,14 @@ def render_snapshot(
     selected: Mapping[str, Any] | None = None,
     preserve: bool = False,
     now: float | None = None,
+    continuation: bool = False,
 ) -> str:
     """Render a snapshot as Rofi script headers and rows."""
 
     rows = snapshot.get("sessions", []) if isinstance(snapshot, Mapping) else []
     if not isinstance(rows, list):
         rows = []
-    output = [
+    headers = [
         _protocol("prompt", "Agents"),
         _protocol("no-custom", "true"),
         _protocol("use-hot-keys", "true"),
@@ -220,13 +229,14 @@ def render_snapshot(
         # Rofi preserves the current filter and cursor across a script
         # callback when these headers are present.  This is especially useful
         # when a stale selection failed to open.
-        output.extend([_protocol("keep-selection", "true"), _protocol("keep-filter", "true")])
+        headers.extend([_protocol("keep-selection", "true"), _protocol("keep-filter", "true")])
     effective_message = sanitize(message)
     if not effective_message and isinstance(snapshot, Mapping):
         effective_message = summarize_errors(snapshot.get("errors", []))
     if effective_message:
-        output.append(_protocol("message", effective_message))
+        headers.append(_protocol("message", effective_message))
 
+    rendered_rows: list[str] = []
     emitted = 0
     for session in rows:
         if not isinstance(session, Mapping):
@@ -264,15 +274,28 @@ def render_snapshot(
         ]
         if session.get("active"):
             options.append(("active", "true"))
-        output.append(_row_text(session, now) + _row_options(options))
+        rendered_rows.append(_row_text(session, now) + _row_options(options))
         emitted += 1
 
     if emitted == 0:
         status = "No agent sessions found"
         if effective_message:
             status = "No sessions · " + effective_message
-        output.append(status + _row_options([("nonselectable", "true"), ("urgent", "true")]))
-    return "\n".join(output) + "\n"
+        rendered_rows.append(status + _row_options([("nonselectable", "true"), ("urgent", "true")]))
+
+    if continuation:
+        return ROFI_RECORD_SEPARATOR.join((*headers, *rendered_rows)) + ROFI_RECORD_SEPARATOR
+
+    # Rofi starts every script-mode process with LF records.  Change its
+    # remembered delimiter in the final LF header, then use tabs for rows so a
+    # literal newline can create a second visual line inside ``display``.
+    headers.append(_protocol("delim", ROFI_DELIMITER_VALUE))
+    return (
+        "\n".join(headers)
+        + "\n"
+        + ROFI_RECORD_SEPARATOR.join(rendered_rows)
+        + ROFI_RECORD_SEPARATOR
+    )
 
 
 def _parse_selection(raw: str | None) -> dict[str, Any]:
@@ -376,17 +399,17 @@ def run_rofi(
     """Process one Rofi script invocation."""
 
     environ = environ or os.environ
-    store = store or CacheStore()
-    try:
-        config = config or load_config()
-    except ConfigError as exc:
-        print(render_snapshot(None, message=str(exc)), end="")
-        return 0
-
     try:
         retv = int(environ.get("ROFI_RETV", "0") or "0")
     except ValueError:
         retv = 0
+
+    store = store or CacheStore()
+    try:
+        config = config or load_config()
+    except ConfigError as exc:
+        print(render_snapshot(None, message=str(exc), continuation=retv != 0), end="")
+        return 0
 
     if retv in {2, 3}:
         # ``no-custom`` normally prevents these callbacks.  If a user has a
@@ -401,7 +424,16 @@ def run_rofi(
                 selected = None
         snapshot = store.load(config.fingerprint)
         notice = "Custom input is disabled" if retv == 2 else "Deletion is disabled"
-        print(render_snapshot(snapshot, message=notice, selected=selected, preserve=True), end="")
+        print(
+            render_snapshot(
+                snapshot,
+                message=notice,
+                selected=selected,
+                preserve=True,
+                continuation=True,
+            ),
+            end="",
+        )
         return 0
 
     if retv == ROFI_RETV_SELECTED:
@@ -419,6 +451,7 @@ def run_rofi(
                     message=f"Unable to open session: {sanitize(exc)}",
                     selected=selected,
                     preserve=True,
+                    continuation=True,
                 ),
                 end="",
             )
@@ -427,7 +460,7 @@ def run_rofi(
     if retv == ROFI_RETV_CUSTOM_1:
         try:
             snapshot = _forced_refresh(store, config)
-            print(render_snapshot(snapshot, preserve=True), end="")
+            print(render_snapshot(snapshot, preserve=True, continuation=True), end="")
         except (engine.PickerError, OSError, subprocess.SubprocessError) as exc:
             snapshot = store.load(config.fingerprint)
             print(
@@ -435,6 +468,7 @@ def run_rofi(
                     snapshot,
                     message=f"Refresh failed: {sanitize(exc)}",
                     preserve=True,
+                    continuation=True,
                 ),
                 end="",
             )

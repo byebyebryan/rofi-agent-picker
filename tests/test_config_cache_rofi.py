@@ -21,6 +21,8 @@ from rofi_agent_picker.rofi import (
     PROVIDER_ICON_PATHS,
     PROVIDER_LABELS,
     PROVIDER_SEARCH_TERMS,
+    ROFI_DELIMITER_VALUE,
+    ROFI_RECORD_SEPARATOR,
     ROW_SEPARATOR,
     _age,
     _background_command,
@@ -62,6 +64,19 @@ def parse_row_options(row: str) -> tuple[str, dict[str, str]]:
     if len(fields) % 2:
         raise AssertionError("row options are not key/value pairs")
     return visible, dict(zip(fields[::2], fields[1::2], strict=True))
+
+
+def parse_rendered_records(output: str) -> tuple[list[str], list[str]]:
+    delimiter_header = f"\x00delim\x1f{ROFI_DELIMITER_VALUE}\n"
+    if delimiter_header in output:
+        header_text, record_text = output.split(delimiter_header, 1)
+        headers = [*header_text.split("\n"), delimiter_header.removesuffix("\n")]
+        records = record_text.removesuffix(ROFI_RECORD_SEPARATOR).split(ROFI_RECORD_SEPARATOR)
+    else:
+        records = output.removesuffix(ROFI_RECORD_SEPARATOR).split(ROFI_RECORD_SEPARATOR)
+        headers = [record for record in records if record.startswith("\x00")]
+        records = [record for record in records if not record.startswith("\x00")]
+    return headers, [record for record in records if record]
 
 
 class ConfigTest(unittest.TestCase):
@@ -328,8 +343,10 @@ class RofiProtocolTest(unittest.TestCase):
         self.assertIn("\x00prompt\x1fAgents", output)
         self.assertIn("\x00use-hot-keys\x1ftrue", output)
         self.assertIn("\x00markup-rows\x1ftrue", output)
+        self.assertIn(f"\x00delim\x1f{ROFI_DELIMITER_VALUE}\n", output)
         self.assertNotIn("hello\nworld", output)
-        row = next(line for line in output.split("\n") if line.startswith("hello"))
+        _, rows = parse_rendered_records(output)
+        row = next(record for record in rows if record.startswith("hello"))
         visible, options = parse_row_options(row)
         self.assertEqual(1, row.count("\x00"))
         self.assertIn("Codex", visible)
@@ -352,7 +369,8 @@ class RofiProtocolTest(unittest.TestCase):
             activityState="waiting",
         )
         output = render_snapshot({"sessions": [selected]}, now=100)
-        row = next(line for line in output.split("\n") if line.startswith("A < & >"))
+        _, rows = parse_rendered_records(output)
+        row = next(record for record in rows if record.startswith("A < & >"))
         visible, options = parse_row_options(row)
         display = options["display"]
         meta = options["meta"]
@@ -369,7 +387,8 @@ class RofiProtocolTest(unittest.TestCase):
                 output = render_snapshot(
                     {"sessions": [session(kind, identifier, activityState="active")]}, now=100
                 )
-                row = next(line for line in output.split("\n") if line.startswith("hello"))
+                _, rows = parse_rendered_records(output)
+                row = next(record for record in rows if record.startswith("hello"))
                 visible, options = parse_row_options(row)
                 display = options["display"]
                 meta = options["meta"]
@@ -402,7 +421,8 @@ class RofiProtocolTest(unittest.TestCase):
 
     def test_empty_snapshot_has_nonselectable_status_row(self) -> None:
         output = render_snapshot({"sessions": []}, message="No hosts reachable")
-        row = next(line for line in output.split("\n") if line.startswith("No sessions"))
+        _, rows = parse_rendered_records(output)
+        row = next(record for record in rows if record.startswith("No sessions"))
         visible, options = parse_row_options(row)
         self.assertEqual("No sessions · No hosts reachable", visible)
         self.assertEqual({"nonselectable": "true", "urgent": "true"}, options)
@@ -424,15 +444,26 @@ class RofiProtocolTest(unittest.TestCase):
             result = run_rofi({"ROFI_RETV": "0"}, store=store, config=self._config())
         self.assertEqual(0, result)
         store.refresh.assert_called_once()
-        self.assertIn("Agents", output.getvalue())
+        initial_output = output.getvalue()
+        self.assertIn("Agents", initial_output)
+        initial_headers, initial_rows = parse_rendered_records(initial_output)
+        self.assertIn(f"\x00delim\x1f{ROFI_DELIMITER_VALUE}", initial_headers)
+        self.assertEqual(1, len(initial_rows))
+        self.assertIn(ROW_SEPARATOR, parse_row_options(initial_rows[0])[1]["display"])
 
         output = io.StringIO()
         with mock.patch("sys.stdout", output):
             result = run_rofi({"ROFI_RETV": "10"}, store=store, config=self._config())
         self.assertEqual(0, result)
         self.assertEqual(2, store.refresh.call_count)
-        self.assertIn("\x00keep-selection\x1ftrue", output.getvalue())
-        self.assertIn("\x00keep-filter\x1ftrue", output.getvalue())
+        callback_output = output.getvalue()
+        self.assertIn("\x00keep-selection\x1ftrue", callback_output)
+        self.assertIn("\x00keep-filter\x1ftrue", callback_output)
+        callback_headers, callback_rows = parse_rendered_records(callback_output)
+        self.assertNotIn(f"\x00delim\x1f{ROFI_DELIMITER_VALUE}", callback_headers)
+        self.assertTrue(callback_output.endswith(ROFI_RECORD_SEPARATOR))
+        self.assertEqual(1, len(callback_rows))
+        self.assertIn(ROW_SEPARATOR, parse_row_options(callback_rows[0])[1]["display"])
 
         failing_store = mock.Mock(spec=CacheStore)
         failing_store.refresh.side_effect = engine.PickerError("offline")

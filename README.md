@@ -19,14 +19,15 @@ The executable can be run directly from a checkout:
 ```sh
 ./bin/rofi-agent-picker list | jq
 rofi -show agent -modes "agent:$(pwd)/bin/rofi-agent-picker" \
-  -kb-custom-1 Alt+r
+  -kb-custom-1 Alt+r -eh 2
 ```
 
 The normal Rofi invocation is configured as a script mode.  `Mod+A` or a
 similar Niri binding can invoke it with `rofi -show agent`.  The prompt is
 `Agents`; Rofi's normal arrow-key navigation, filtering, and Enter selection
 remain available.  `Alt+R` performs a bounded foreground refresh.  Custom
-input and deletion are disabled in this flat v0.1 UI.
+input and deletion are disabled in this flat v0.1 UI.  Rofi must be launched
+with `-eh 2` so each list element reserves height for both display lines.
 
 Rows use a two-line layout: the session title is primary, while a smaller
 secondary line shows the display host, shortened working directory, age, and
