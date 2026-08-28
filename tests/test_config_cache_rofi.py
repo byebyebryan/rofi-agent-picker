@@ -59,7 +59,7 @@ def session(
         "kind": kind,
         "id": identifier,
         "name": "hello\nworld\x00",
-        "cwd": "/home/bryan/code/project",
+        "cwd": str(Path.home() / "code/project"),
         "host": "workstation",
         "windowHost": "workstation-vpn.example",
         "connectHost": "workstation-vpn.example",
