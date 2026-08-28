@@ -56,6 +56,8 @@ for name in paths:
         problems.append(f"{name}: CRLF line ending")
     if data and not data.endswith(b"\n"):
         problems.append(f"{name}: missing final newline")
+    if data.endswith(b"\n\n"):
+        problems.append(f"{name}: blank line at EOF")
     for number, line in enumerate(data.splitlines(), start=1):
         if line.endswith((b" ", b"\t")):
             problems.append(f"{name}:{number}: trailing whitespace")

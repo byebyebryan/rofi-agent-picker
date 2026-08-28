@@ -272,7 +272,9 @@ def _open_selection(
 
 def _background_command() -> list[str]:
     entrypoint = Path(__file__).resolve().parents[1] / "bin" / "rofi-agent-picker"
-    return [sys.executable, str(entrypoint), "refresh", "--background"]
+    if entrypoint.is_file():
+        return [sys.executable, str(entrypoint), "refresh", "--background"]
+    return [sys.executable, "-m", "rofi_agent_picker", "refresh", "--background"]
 
 
 def _message_for_cache(store: CacheStore, snapshot: Mapping[str, Any], config: PickerConfig) -> str:

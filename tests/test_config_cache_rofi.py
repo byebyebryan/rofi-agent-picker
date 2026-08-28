@@ -16,7 +16,13 @@ from unittest import mock
 from rofi_agent_picker import VERSION, app, engine
 from rofi_agent_picker.cache import CACHE_VERSION, CacheStore, build_snapshot
 from rofi_agent_picker.config import ConfigError, PickerConfig, config_from_mapping, load_config
-from rofi_agent_picker.rofi import _age, _parse_selection, render_snapshot, run_rofi
+from rofi_agent_picker.rofi import (
+    _age,
+    _background_command,
+    _parse_selection,
+    render_snapshot,
+    run_rofi,
+)
 
 THREAD_ID = "00000000-0000-0000-0000-000000000001"
 OPENCODE_ID = "ses_0319af718ffegy8N1IoMEggx4B"
@@ -280,6 +286,20 @@ class CacheTest(unittest.TestCase):
 
 
 class RofiProtocolTest(unittest.TestCase):
+    def test_background_command_supports_checkout_and_installed_layouts(self) -> None:
+        checkout = _background_command()
+        self.assertEqual(sys.executable, checkout[0])
+        self.assertTrue(checkout[1].endswith("/bin/rofi-agent-picker"))
+        self.assertEqual(["refresh", "--background"], checkout[2:])
+
+        with mock.patch(
+            "rofi_agent_picker.rofi.__file__", "/opt/venv/lib/rofi_agent_picker/rofi.py"
+        ):
+            self.assertEqual(
+                [sys.executable, "-m", "rofi_agent_picker", "refresh", "--background"],
+                _background_command(),
+            )
+
     def test_missing_or_invalid_timestamp_has_unknown_age(self) -> None:
         for timestamp in (None, 0, -1, "", "not-a-time"):
             with self.subTest(timestamp=timestamp):
