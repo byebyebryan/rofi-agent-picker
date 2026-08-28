@@ -20,6 +20,9 @@ rofi-agent-picker = "rofi_agent_picker.app:main"
 [tool.setuptools.packages.find]
 include = ["rofi_agent_picker*"]
 
+[tool.setuptools.package-data]
+rofi_agent_picker = ["assets/providers/*.svg"]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 100

@@ -17,9 +17,15 @@ from rofi_agent_picker import VERSION, app, engine
 from rofi_agent_picker.cache import CACHE_VERSION, CacheStore, build_snapshot
 from rofi_agent_picker.config import ConfigError, PickerConfig, config_from_mapping, load_config
 from rofi_agent_picker.rofi import (
+    FALLBACK_ICON_PATH,
+    PROVIDER_ICON_PATHS,
+    PROVIDER_LABELS,
+    PROVIDER_SEARCH_TERMS,
+    ROW_SEPARATOR,
     _age,
     _background_command,
     _parse_selection,
+    _provider_icon,
     render_snapshot,
     run_rofi,
 )
@@ -306,16 +312,80 @@ class RofiProtocolTest(unittest.TestCase):
                 self.assertEqual("unknown", _age(timestamp, now=100))
 
     def test_rows_escape_protocol_controls_and_include_search_metadata(self) -> None:
-        output = render_snapshot({"sessions": [session(active=True)]}, now=100)
+        output = render_snapshot(
+            {"sessions": [session(active=True, activityState="active")]}, now=100
+        )
         self.assertIn("\x00prompt\x1fAgents", output)
         self.assertIn("\x00use-hot-keys\x1ftrue", output)
+        self.assertIn("\x00markup-rows\x1ftrue", output)
         self.assertIn("\x00meta\x1f", output)
         self.assertIn("\x00active\x1ftrue", output)
-        self.assertIn("\x00icon\x1futilities-terminal-symbolic", output)
+        self.assertIn(f"\x00icon\x1f{PROVIDER_ICON_PATHS['codex']}", output)
         self.assertNotIn("hello\nworld", output)
+        row = next(line for line in output.split("\n") if line.startswith("hello"))
+        display = row.split("\x00display\x1f", 1)[1].split("\x00", 1)[0]
+        self.assertIn(f"<b>hello world</b>{ROW_SEPARATOR}", display)
+        self.assertIn('<span size="smaller" alpha="75%">', display)
+        self.assertIn("snap  ·  ~/code/project  ·  0s  ·  active", display)
         info = output.split("\x00info\x1f", 1)[1].split("\x00", 1)[0]
         decoded = json.loads(info)
         self.assertEqual(THREAD_ID, decoded["id"])
+
+    def test_display_escapes_markup_and_hides_provider_while_filtering_keeps_it(self) -> None:
+        selected = session(
+            kind="claude",
+            name="A < & >",
+            host="host",
+            cwd="/srv/project",
+            recencyAt=100,
+            activityState="waiting",
+        )
+        output = render_snapshot({"sessions": [selected]}, now=100)
+        row = next(line for line in output.split("\n") if line.startswith("A < & >"))
+        display = row.split("\x00display\x1f", 1)[1].split("\x00", 1)[0]
+        meta = row.split("\x00meta\x1f", 1)[1].split("\x00", 1)[0]
+        self.assertIn("<b>A &lt; &amp; &gt;</b>", display)
+        self.assertNotIn("Claude Code", display)
+        self.assertIn("Claude Code", row)
+        self.assertIn("claude claude-code claude code", meta)
+        self.assertIn("host  ·  /srv/project  ·  0s  ·  waiting", display)
+
+    def test_each_provider_uses_its_icon_and_retains_search_terms(self) -> None:
+        for kind in PROVIDER_LABELS:
+            identifier = OPENCODE_ID if kind == "opencode" else THREAD_ID
+            with self.subTest(kind=kind):
+                output = render_snapshot(
+                    {"sessions": [session(kind, identifier, activityState="active")]}, now=100
+                )
+                row = next(line for line in output.split("\n") if line.startswith("hello"))
+                display = row.split("\x00display\x1f", 1)[1].split("\x00", 1)[0]
+                meta = row.split("\x00meta\x1f", 1)[1].split("\x00", 1)[0]
+                self.assertIn(f"\x00icon\x1f{PROVIDER_ICON_PATHS[kind]}", row)
+                self.assertIn(PROVIDER_LABELS[kind], row)
+                self.assertNotIn(PROVIDER_LABELS[kind], display)
+                self.assertIn(PROVIDER_SEARCH_TERMS[kind], meta)
+
+    def test_provider_icons_are_bundled_absolute_paths_with_safe_fallback(self) -> None:
+        for kind, path in PROVIDER_ICON_PATHS.items():
+            with self.subTest(kind=kind):
+                self.assertTrue(path.is_absolute())
+                self.assertTrue(path.is_file())
+                self.assertEqual(str(path), _provider_icon(kind))
+        self.assertTrue(FALLBACK_ICON_PATH.is_absolute())
+        self.assertTrue(FALLBACK_ICON_PATH.is_file())
+        self.assertEqual(str(FALLBACK_ICON_PATH), _provider_icon("unknown"))
+        with mock.patch.dict(PROVIDER_ICON_PATHS, {"codex": Path("/missing/codex.svg")}):
+            self.assertEqual(str(FALLBACK_ICON_PATH), _provider_icon("codex"))
+
+    def test_provider_icon_assets_are_declared_as_package_data(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        project = tomllib.loads((root / "pyproject.toml").read_text())
+        package_data = project["tool"]["setuptools"]["package-data"]["rofi_agent_picker"]
+        self.assertIn("assets/providers/*.svg", package_data)
+        self.assertEqual(
+            {"claude.svg", "codex.svg", "generic.svg", "opencode.svg"},
+            {path.name for path in (root / "rofi_agent_picker/assets/providers").glob("*.svg")},
+        )
 
     def test_empty_snapshot_has_nonselectable_status_row(self) -> None:
         output = render_snapshot({"sessions": []}, message="No hosts reachable")

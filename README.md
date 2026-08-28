@@ -28,12 +28,16 @@ similar Niri binding can invoke it with `rofi -show agent`.  The prompt is
 remain available.  `Alt+R` performs a bounded foreground refresh.  Custom
 input and deletion are disabled in this flat v0.1 UI.
 
-Rows show the session title, provider, display host, shortened working
-directory, age, and active/idle state.  The complete session identity is
-carried in Rofi's `info` metadata, not parsed from visible text.  Active rows
-are marked with Rofi's active-row metadata.  A successful selection focuses an
-existing Niri terminal when possible or resumes/creates the compatible DMS
-tmux session and launches the terminal detached.
+Rows use a two-line layout: the session title is primary, while a smaller
+secondary line shows the display host, shortened working directory, age, and
+active/idle state.  The provider is represented by a bundled icon; provider
+names and aliases remain in the row's filter text and invisible Rofi metadata,
+so searching for `codex`, `claude`, `Claude Code`, or `opencode` still works.
+The complete session identity is carried in Rofi's `info` metadata, not parsed
+from visible text.  Active rows are marked with Rofi's active-row metadata.  A
+successful selection focuses an existing Niri terminal when possible or
+resumes/creates the compatible DMS tmux session and launches the terminal
+detached.  Icon provenance and trademark notes are in [`ASSETS.md`](ASSETS.md).
 
 ## Configuration
 

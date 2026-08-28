@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Mapping, Sequence
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -26,11 +27,20 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 PROVIDER_LABELS = {
     "codex": "Codex",
-    "claude": "Claude",
+    "claude": "Claude Code",
     "opencode": "OpenCode",
 }
-ACTIVE_ICON = "utilities-terminal-symbolic"
-HISTORY_ICON = "document-open-recent-symbolic"
+PROVIDER_SEARCH_TERMS = {
+    "codex": "codex",
+    "claude": "claude claude-code claude code",
+    "opencode": "opencode open-code open code",
+}
+PROVIDER_ICON_PATHS = {
+    kind: Path(__file__).resolve().parent / "assets" / "providers" / f"{kind}.svg"
+    for kind in PROVIDER_LABELS
+}
+FALLBACK_ICON_PATH = Path(__file__).resolve().parent / "assets" / "providers" / "generic.svg"
+ROW_SEPARATOR = "\u2028"
 
 
 def sanitize(value: object) -> str:
@@ -42,6 +52,16 @@ def sanitize(value: object) -> str:
 
 def _protocol(key: str, value: object) -> str:
     return "\0" + key + "\x1f" + sanitize(value)
+
+
+def _pango_escape(value: object) -> str:
+    """Escape dynamic text before embedding it in row Pango markup."""
+
+    # U+2028 is our intentional display line separator.  Do not let an input
+    # value create an additional visual line, and keep the protocol itself
+    # one physical LF-delimited row.
+    text = sanitize(value).replace("\u0085", " ").replace("\u2028", " ").replace("\u2029", " ")
+    return escape(text, quote=False)
 
 
 def _shorten_cwd(value: object, width: int = 42) -> str:
@@ -124,6 +144,35 @@ def _row_text(session: Mapping[str, Any], now: float | None = None) -> str:
     return f"{name}  ·  {provider}  ·  {host}  ·  {cwd}  ·  {age}  ·  {activity}"
 
 
+def _row_display(session: Mapping[str, Any], now: float | None = None) -> str:
+    """Return the two-line Pango presentation for one session row."""
+
+    name = sanitize(session.get("name") or session.get("id") or "Agent")
+    host = sanitize(session.get("host") or session.get("windowHost") or "local")
+    cwd = _shorten_cwd(session.get("cwd"))
+    age = _age(session.get("recencyAt"), now)
+    activity = sanitize(
+        session.get("activityState") or ("active" if session.get("active") else "idle")
+    )
+    secondary = "  ·  ".join((host, cwd, age, activity))
+    return (
+        f"<b>{_pango_escape(name)}</b>"
+        f'{ROW_SEPARATOR}<span size="smaller" alpha="75%">'
+        f"{_pango_escape(secondary)}</span>"
+    )
+
+
+def _provider_icon(kind: str) -> str:
+    """Resolve a bundled provider icon, with a bundled generic fallback."""
+
+    candidate = PROVIDER_ICON_PATHS.get(kind)
+    if candidate is not None and candidate.is_file():
+        return str(candidate)
+    if FALLBACK_ICON_PATH.is_file():
+        return str(FALLBACK_ICON_PATH)
+    return ""
+
+
 def summarize_errors(errors: Sequence[object]) -> str:
     valid: list[str] = []
     for item in errors:
@@ -156,6 +205,7 @@ def render_snapshot(
         _protocol("prompt", "Agents"),
         _protocol("no-custom", "true"),
         _protocol("use-hot-keys", "true"),
+        _protocol("markup-rows", "true"),
     ]
     if preserve or selected is not None:
         # Rofi preserves the current filter and cursor across a script
@@ -179,11 +229,9 @@ def render_snapshot(
         if kind not in PROVIDER_LABELS or not identifier:
             continue
         info = selection_payload(session)
-        metadata = [
-            _protocol("info", info),
-            _protocol(
-                "meta",
-                " ".join(
+        search_metadata = " ".join(
+            (
+                *(
                     sanitize(session.get(field) or "")
                     for field in (
                         "name",
@@ -195,8 +243,15 @@ def render_snapshot(
                         "activityState",
                     )
                 ),
-            ),
-            _protocol("icon", ACTIVE_ICON if session.get("active") else HISTORY_ICON),
+                PROVIDER_LABELS[kind],
+                PROVIDER_SEARCH_TERMS[kind],
+            )
+        )
+        metadata = [
+            _protocol("info", info),
+            _protocol("meta", search_metadata),
+            _protocol("icon", _provider_icon(kind)),
+            _protocol("display", _row_display(session, now)),
         ]
         if session.get("active"):
             metadata.append(_protocol("active", "true"))
