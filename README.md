@@ -76,8 +76,12 @@ discovery-affecting configuration change causes a synchronous refresh.
 
 On a cache miss, the first invocation refreshes synchronously.  A fresh cache
 renders immediately.  A stale cache renders immediately with a short
-`Refreshing in background` message and starts at most one detached refresh;
-the new result is visible the next time the picker opens or after `Alt+R`.
+`Refreshing in background` message and starts at most one detached refresh.
+While that worker is running, the open dialog polls the marker about once per
+second and replaces the cached rows as soon as the fresh snapshot is written;
+the status then clears and polling stops.  A failed or stalled worker stops
+polling with an `Alt+R` retry message.  The new result is also visible the next
+time the picker opens or after `Alt+R`.
 Per-host snapshots and rows from failed provider stages are retained while a
 host is unavailable, and current errors are summarized in the message area.
 There is intentionally no resident process or push-update channel.

@@ -361,6 +361,27 @@ class CacheStore:
             return False
         return True
 
+    def background_age(self, now: float | None = None) -> float | None:
+        """Return the age of the detached-refresh marker, if it is valid."""
+
+        try:
+            metadata = self.background_path.stat()
+        except OSError:
+            return None
+        if not stat.S_ISREG(metadata.st_mode):
+            return None
+        return max(0.0, (now if now is not None else time.time()) - metadata.st_mtime)
+
+    def background_active(
+        self,
+        max_age: float = LOCK_WAIT_SECONDS * 4,
+        now: float | None = None,
+    ) -> bool:
+        """Report whether a detached refresh marker is recent enough to poll."""
+
+        age = self.background_age(now)
+        return age is not None and age <= max_age
+
     def clear_background_marker(self) -> None:
         try:
             self.background_path.unlink()

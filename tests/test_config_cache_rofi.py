@@ -17,12 +17,15 @@ from rofi_agent_picker import VERSION, app, engine
 from rofi_agent_picker.cache import CACHE_VERSION, CacheStore, build_snapshot
 from rofi_agent_picker.config import ConfigError, PickerConfig, config_from_mapping, load_config
 from rofi_agent_picker.rofi import (
+    AUTO_REFRESH_DATA_PREFIX,
+    AUTO_REFRESH_STOPPED_MESSAGE,
     FALLBACK_ICON_PATH,
     PROVIDER_ICON_PATHS,
     PROVIDER_LABELS,
     PROVIDER_SEARCH_TERMS,
     ROFI_DELIMITER_VALUE,
     ROFI_RECORD_SEPARATOR,
+    ROFI_RETV_CUSTOM_19,
     ROW_SEPARATOR,
     _age,
     _background_command,
@@ -300,6 +303,15 @@ class CacheTest(unittest.TestCase):
         self.assertEqual(0o600, stat.S_IMODE(self.store.background_path.stat().st_mode))
         self.store.clear_background_marker()
 
+    def test_background_marker_query_reports_age_and_activity(self) -> None:
+        self.store.ensure_root()
+        self.store.background_path.write_text("worker")
+        modified = self.store.background_path.stat().st_mtime
+        self.assertAlmostEqual(2.0, self.store.background_age(now=modified + 2.0))
+        self.assertTrue(self.store.background_active(max_age=2.0, now=modified + 2.0))
+        self.assertFalse(self.store.background_active(max_age=1.0, now=modified + 2.0))
+        self.store.clear_background_marker()
+
     def test_activity_failure_keeps_last_known_activity(self) -> None:
         old = session(active=True, activityState="active", tmuxSession="agent")
         previous = build_snapshot(self.config, self.events(old), now=100)
@@ -483,7 +495,133 @@ class RofiProtocolTest(unittest.TestCase):
         with mock.patch("sys.stdout", output):
             run_rofi({"ROFI_RETV": "0"}, store=store, config=self._config())
         store.spawn_background.assert_called_once()
-        self.assertIn("Refreshing in background", output.getvalue())
+        rendered = output.getvalue()
+        self.assertIn("Refreshing in background", rendered)
+        self.assertIn(
+            '\x00theme\x1fconfiguration { timeout { delay: 1; action: "kb-custom-19"; } }', rendered
+        )
+        self.assertIn(f"\x00data\x1f{AUTO_REFRESH_DATA_PREFIX}", rendered)
+
+    def test_stale_mode_reports_spawn_failure_without_enabling_polling(self) -> None:
+        store = mock.Mock(spec=CacheStore)
+        store.load.return_value = {"sessions": [session()], "errors": []}
+        store.is_fresh.return_value = False
+        store.spawn_background.return_value = False
+        store.background_active.return_value = False
+        output = io.StringIO()
+        with mock.patch("sys.stdout", output):
+            run_rofi({"ROFI_RETV": "0"}, store=store, config=self._config())
+        store.spawn_background.assert_called_once()
+        rendered = output.getvalue()
+        self.assertIn(AUTO_REFRESH_STOPPED_MESSAGE, rendered)
+        self.assertNotIn("Refreshing in background", rendered)
+        self.assertNotIn("\x00theme\x1f", rendered)
+
+    def test_background_callback_polls_without_starting_another_refresh(self) -> None:
+        store = mock.Mock(spec=CacheStore)
+        store.load.return_value = {"sessions": [session()], "errors": []}
+        store.is_fresh.return_value = False
+        store.background_active.return_value = True
+        output = io.StringIO()
+        with mock.patch("sys.stdout", output):
+            result = run_rofi(
+                {
+                    "ROFI_RETV": str(ROFI_RETV_CUSTOM_19),
+                    "ROFI_DATA": f"{AUTO_REFRESH_DATA_PREFIX}{int(time.time()) + 10}",
+                },
+                store=store,
+                config=self._config(),
+            )
+        self.assertEqual(0, result)
+        store.refresh.assert_not_called()
+        store.spawn_background.assert_not_called()
+        rendered = output.getvalue()
+        self.assertIn("Refreshing in background", rendered)
+        self.assertIn("\x00keep-selection\x1ftrue", rendered)
+        self.assertIn("\x00keep-filter\x1ftrue", rendered)
+        self.assertIn(
+            '\x00theme\x1fconfiguration { timeout { delay: 1; action: "kb-custom-19"; } }', rendered
+        )
+
+    def test_background_callback_renders_fresh_rows_and_disables_polling(self) -> None:
+        fresh = session(name="fresh", recencyAt=int(time.time()))
+        store = mock.Mock(spec=CacheStore)
+        store.load.return_value = {"sessions": [fresh], "errors": []}
+        store.is_fresh.return_value = True
+        output = io.StringIO()
+        with mock.patch("sys.stdout", output):
+            result = run_rofi(
+                {"ROFI_RETV": str(ROFI_RETV_CUSTOM_19)},
+                store=store,
+                config=self._config(),
+            )
+        self.assertEqual(0, result)
+        store.refresh.assert_not_called()
+        store.spawn_background.assert_not_called()
+        store.background_active.assert_not_called()
+        rendered = output.getvalue()
+        self.assertIn("fresh", rendered)
+        self.assertNotIn("Refreshing in background", rendered)
+        self.assertIn("\x00message\x1f", rendered)
+        self.assertIn(
+            '\x00theme\x1fconfiguration { timeout { delay: 0; action: "kb-custom-19"; } }', rendered
+        )
+        self.assertIn("\x00data\x1fidle", rendered)
+
+    def test_background_callback_rereads_after_marker_stop_and_prefers_fresh_cache(self) -> None:
+        stale = {"sessions": [session(name="stale")], "errors": []}
+        fresh = {"sessions": [session(name="fresh")], "errors": []}
+        store = mock.Mock(spec=CacheStore)
+        store.load.side_effect = [stale, fresh]
+        store.is_fresh.side_effect = [False, True]
+        store.background_active.return_value = False
+        output = io.StringIO()
+        with mock.patch("sys.stdout", output):
+            result = run_rofi(
+                {"ROFI_RETV": str(ROFI_RETV_CUSTOM_19)},
+                store=store,
+                config=self._config(),
+            )
+        self.assertEqual(0, result)
+        store.refresh.assert_not_called()
+        store.spawn_background.assert_not_called()
+        self.assertEqual(2, store.load.call_count)
+        rendered = output.getvalue()
+        self.assertIn("fresh", rendered)
+        self.assertNotIn(AUTO_REFRESH_STOPPED_MESSAGE, rendered)
+        self.assertNotIn("Refreshing in background", rendered)
+        self.assertIn("\x00message\x1f", rendered)
+        self.assertIn(
+            '\x00theme\x1fconfiguration { timeout { delay: 0; action: "kb-custom-19"; } }', rendered
+        )
+
+    def test_background_callback_stops_on_worker_failure_or_stall(self) -> None:
+        stale = {"sessions": [session()], "errors": []}
+        for data, marker_active in (
+            (None, False),
+            (f"{AUTO_REFRESH_DATA_PREFIX}{int(time.time()) - 1}", True),
+        ):
+            with self.subTest(data=data, marker_active=marker_active):
+                store = mock.Mock(spec=CacheStore)
+                store.load.return_value = stale
+                store.is_fresh.return_value = False
+                store.background_active.return_value = marker_active
+                environ = {"ROFI_RETV": str(ROFI_RETV_CUSTOM_19)}
+                if data is not None:
+                    environ["ROFI_DATA"] = data
+                output = io.StringIO()
+                with mock.patch("sys.stdout", output):
+                    result = run_rofi(environ, store=store, config=self._config())
+                self.assertEqual(0, result)
+                store.refresh.assert_not_called()
+                store.spawn_background.assert_not_called()
+                rendered = output.getvalue()
+                self.assertIn(AUTO_REFRESH_STOPPED_MESSAGE, rendered)
+                self.assertNotIn("Refreshing in background", rendered)
+                self.assertIn(
+                    '\x00theme\x1fconfiguration { timeout { delay: 0; action: "kb-custom-19"; } }',
+                    rendered,
+                )
 
     def test_selection_success_closes_and_failure_rerenders(self) -> None:
         selected = session()

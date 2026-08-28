@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import signal
@@ -21,8 +22,14 @@ from .config import ConfigError, PickerConfig, load_config
 
 ROFI_RETV_SELECTED = 1
 ROFI_RETV_CUSTOM_1 = 10
+ROFI_RETV_CUSTOM_19 = 28
 MAX_MESSAGE_LENGTH = 360
 FORCED_REFRESH_TIMEOUT_SECONDS = 30
+AUTO_REFRESH_POLL_SECONDS = 1
+AUTO_REFRESH_MAX_SECONDS = 30
+AUTO_REFRESH_DATA_PREFIX = "background-refresh:"
+AUTO_REFRESH_IDLE_DATA = "idle"
+AUTO_REFRESH_STOPPED_MESSAGE = "Background refresh stopped · press Alt+R to retry"
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 _DISPLAY_CONTROL_CHARS = re.compile(r"[\x00-\x09\x0b-\x1f\x7f]")
 
@@ -205,6 +212,32 @@ def summarize_errors(errors: Sequence[object]) -> str:
     return joined if len(joined) <= MAX_MESSAGE_LENGTH else joined[: MAX_MESSAGE_LENGTH - 1] + "…"
 
 
+def _timeout_theme(enabled: bool) -> str:
+    """Build the per-dialog timeout configuration used by script mode."""
+
+    delay = AUTO_REFRESH_POLL_SECONDS if enabled else 0
+    return f'configuration {{ timeout {{ delay: {delay}; action: "kb-custom-19"; }} }}'
+
+
+def _refresh_data(deadline: float | None) -> str:
+    """Encode the bounded polling deadline in Rofi's continuation data."""
+
+    if deadline is None:
+        return AUTO_REFRESH_IDLE_DATA
+    return f"{AUTO_REFRESH_DATA_PREFIX}{max(0, int(deadline))}"
+
+
+def _parse_refresh_deadline(value: object) -> float | None:
+    if not isinstance(value, str) or not value.startswith(AUTO_REFRESH_DATA_PREFIX):
+        return None
+    raw_deadline = value[len(AUTO_REFRESH_DATA_PREFIX) :]
+    try:
+        deadline = float(raw_deadline)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return deadline if math.isfinite(deadline) and deadline > 0 else None
+
+
 def render_snapshot(
     snapshot: Mapping[str, Any] | None,
     *,
@@ -213,6 +246,9 @@ def render_snapshot(
     preserve: bool = False,
     now: float | None = None,
     continuation: bool = False,
+    timeout: bool | None = None,
+    refresh_deadline: float | None = None,
+    clear_message: bool = False,
 ) -> str:
     """Render a snapshot as Rofi script headers and rows."""
 
@@ -233,8 +269,13 @@ def render_snapshot(
     effective_message = sanitize(message)
     if not effective_message and isinstance(snapshot, Mapping):
         effective_message = summarize_errors(snapshot.get("errors", []))
-    if effective_message:
+    if effective_message or clear_message:
         headers.append(_protocol("message", effective_message))
+    if timeout is not None:
+        headers.append(_protocol("theme", _timeout_theme(timeout)))
+        if timeout and refresh_deadline is None:
+            refresh_deadline = time.time() + AUTO_REFRESH_MAX_SECONDS
+        headers.append(_protocol("data", _refresh_data(refresh_deadline if timeout else None)))
 
     rendered_rows: list[str] = []
     emitted = 0
@@ -364,12 +405,97 @@ def _background_command() -> list[str]:
     return [sys.executable, "-m", "rofi_agent_picker", "refresh", "--background"]
 
 
-def _message_for_cache(store: CacheStore, snapshot: Mapping[str, Any], config: PickerConfig) -> str:
+def _message_for_cache(
+    store: CacheStore,
+    snapshot: Mapping[str, Any],
+    config: PickerConfig,
+    *,
+    fresh: bool | None = None,
+) -> str:
     errors = summarize_errors(snapshot.get("errors", []))
-    if not store.is_fresh(snapshot, config.refresh_seconds):
+    if fresh is None:
+        fresh = store.is_fresh(snapshot, config.refresh_seconds)
+    if not fresh:
         prefix = "Refreshing in background"
         return prefix + (" · " + errors if errors else "")
     return errors
+
+
+def _start_background_refresh(
+    store: CacheStore,
+) -> tuple[bool, float | None]:
+    """Claim the detached refresh and return whether polling should be enabled."""
+
+    try:
+        started = bool(store.spawn_background(_background_command()))
+    except OSError:
+        started = False
+    if started:
+        return True, time.time() + AUTO_REFRESH_MAX_SECONDS
+    # Another picker invocation may already own the marker.  Continue polling
+    # that worker, but never start a second one from this path.
+    if store.background_active(max_age=AUTO_REFRESH_MAX_SECONDS):
+        return True, time.time() + AUTO_REFRESH_MAX_SECONDS
+    return False, None
+
+
+def _auto_refresh_callback(
+    environ: Mapping[str, str],
+    store: CacheStore,
+    config: PickerConfig,
+) -> str:
+    """Inspect cache state for the timeout callback without doing discovery."""
+
+    snapshot = store.load(config.fingerprint)
+    fresh = snapshot is not None and store.is_fresh(snapshot, config.refresh_seconds)
+    if fresh:
+        return render_snapshot(
+            snapshot,
+            message=summarize_errors(snapshot.get("errors", [])),
+            preserve=True,
+            timeout=False,
+            clear_message=True,
+            continuation=True,
+        )
+
+    deadline = _parse_refresh_deadline(environ.get("ROFI_DATA"))
+    timed_out = deadline is not None and time.time() >= deadline
+    marker_active = not timed_out and store.background_active(max_age=AUTO_REFRESH_MAX_SECONDS)
+    if marker_active:
+        if snapshot is None:
+            message = "Refreshing in background"
+        else:
+            message = _message_for_cache(store, snapshot, config, fresh=False)
+        return render_snapshot(
+            snapshot,
+            message=message,
+            preserve=True,
+            timeout=True,
+            refresh_deadline=deadline,
+            continuation=True,
+        )
+
+    # The worker writes the snapshot before removing its marker.  If both
+    # operations happen between the first load and the marker check, take one
+    # final read so a completed refresh wins over the stale stopped state.
+    latest = store.load(config.fingerprint)
+    if latest is not None and store.is_fresh(latest, config.refresh_seconds):
+        return render_snapshot(
+            latest,
+            message=summarize_errors(latest.get("errors", [])),
+            preserve=True,
+            timeout=False,
+            clear_message=True,
+            continuation=True,
+        )
+
+    return render_snapshot(
+        snapshot,
+        message=AUTO_REFRESH_STOPPED_MESSAGE,
+        preserve=True,
+        timeout=False,
+        continuation=True,
+    )
 
 
 def _forced_refresh(store: CacheStore, config: PickerConfig) -> dict[str, Any]:
@@ -408,7 +534,15 @@ def run_rofi(
     try:
         config = config or load_config()
     except ConfigError as exc:
-        print(render_snapshot(None, message=str(exc), continuation=retv != 0), end="")
+        print(
+            render_snapshot(
+                None,
+                message=str(exc),
+                timeout=False if retv != 0 else None,
+                continuation=retv != 0,
+            ),
+            end="",
+        )
         return 0
 
     if retv in {2, 3}:
@@ -457,10 +591,36 @@ def run_rofi(
             )
             return 0
 
+    if retv == ROFI_RETV_CUSTOM_19:
+        print(_auto_refresh_callback(environ, store, config), end="")
+        return 0
+
     if retv == ROFI_RETV_CUSTOM_1:
         try:
             snapshot = _forced_refresh(store, config)
-            print(render_snapshot(snapshot, preserve=True, continuation=True), end="")
+            fresh = store.is_fresh(snapshot, config.refresh_seconds)
+            polling = False
+            deadline = None
+            if not fresh and store.background_active(max_age=AUTO_REFRESH_MAX_SECONDS):
+                polling = True
+                deadline = _parse_refresh_deadline(environ.get("ROFI_DATA"))
+                if deadline is None:
+                    deadline = time.time() + AUTO_REFRESH_MAX_SECONDS
+            message = _message_for_cache(store, snapshot, config, fresh=fresh)
+            if not fresh and not polling:
+                message = AUTO_REFRESH_STOPPED_MESSAGE
+            print(
+                render_snapshot(
+                    snapshot,
+                    message=message,
+                    preserve=True,
+                    timeout=polling,
+                    refresh_deadline=deadline,
+                    clear_message=True,
+                    continuation=True,
+                ),
+                end="",
+            )
         except (engine.PickerError, OSError, subprocess.SubprocessError) as exc:
             snapshot = store.load(config.fingerprint)
             print(
@@ -468,6 +628,7 @@ def run_rofi(
                     snapshot,
                     message=f"Refresh failed: {sanitize(exc)}",
                     preserve=True,
+                    timeout=False,
                     continuation=True,
                 ),
                 end="",
@@ -475,13 +636,46 @@ def run_rofi(
         return 0
 
     snapshot = store.load(config.fingerprint)
+    polling = False
+    refresh_deadline = None
     if snapshot is None:
         try:
             snapshot = store.refresh(config)
         except (engine.PickerError, OSError, subprocess.SubprocessError) as exc:
             print(render_snapshot(None, message=f"Refresh failed: {sanitize(exc)}"), end="")
             return 0
-    elif not store.is_fresh(snapshot, config.refresh_seconds):
-        store.spawn_background(_background_command())
+    else:
+        fresh = store.is_fresh(snapshot, config.refresh_seconds)
+        if not fresh:
+            polling, refresh_deadline = _start_background_refresh(store)
+            if not polling:
+                # If another worker finished between the first load and the
+                # marker check, show its fresh snapshot instead of stopping
+                # with rows that are already obsolete.
+                latest = store.load(config.fingerprint)
+                if latest is not None and store.is_fresh(latest, config.refresh_seconds):
+                    print(
+                        render_snapshot(
+                            latest,
+                            message=summarize_errors(latest.get("errors", [])),
+                        ),
+                        end="",
+                    )
+                    return 0
+            message = (
+                _message_for_cache(store, snapshot, config, fresh=False)
+                if polling
+                else AUTO_REFRESH_STOPPED_MESSAGE
+            )
+            print(
+                render_snapshot(
+                    snapshot,
+                    message=message,
+                    timeout=True if polling else None,
+                    refresh_deadline=refresh_deadline,
+                ),
+                end="",
+            )
+            return 0
     print(render_snapshot(snapshot, message=_message_for_cache(store, snapshot, config)), end="")
     return 0
