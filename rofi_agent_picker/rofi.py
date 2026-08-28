@@ -54,6 +54,15 @@ def _protocol(key: str, value: object) -> str:
     return "\0" + key + "\x1f" + sanitize(value)
 
 
+def _row_options(options: Sequence[tuple[str, object]]) -> str:
+    """Encode all options for one row after a single NUL separator."""
+
+    fields: list[str] = []
+    for key, value in options:
+        fields.extend((sanitize(key), sanitize(value)))
+    return "\0" + "\x1f".join(fields) if fields else ""
+
+
 def _pango_escape(value: object) -> str:
     """Escape dynamic text before embedding it in row Pango markup."""
 
@@ -247,22 +256,22 @@ def render_snapshot(
                 PROVIDER_SEARCH_TERMS[kind],
             )
         )
-        metadata = [
-            _protocol("info", info),
-            _protocol("meta", search_metadata),
-            _protocol("icon", _provider_icon(kind)),
-            _protocol("display", _row_display(session, now)),
+        options: list[tuple[str, object]] = [
+            ("info", info),
+            ("meta", search_metadata),
+            ("icon", _provider_icon(kind)),
+            ("display", _row_display(session, now)),
         ]
         if session.get("active"):
-            metadata.append(_protocol("active", "true"))
-        output.append(_row_text(session, now) + "".join(metadata))
+            options.append(("active", "true"))
+        output.append(_row_text(session, now) + _row_options(options))
         emitted += 1
 
     if emitted == 0:
         status = "No agent sessions found"
         if effective_message:
             status = "No sessions · " + effective_message
-        output.append(status + _protocol("nonselectable", "true") + _protocol("urgent", "true"))
+        output.append(status + _row_options([("nonselectable", "true"), ("urgent", "true")]))
     return "\n".join(output) + "\n"
 
 

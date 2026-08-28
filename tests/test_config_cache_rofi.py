@@ -54,6 +54,16 @@ def session(
     return result
 
 
+def parse_row_options(row: str) -> tuple[str, dict[str, str]]:
+    visible, separator, encoded = row.partition("\x00")
+    if not separator:
+        raise AssertionError("row has no option separator")
+    fields = encoded.split("\x1f")
+    if len(fields) % 2:
+        raise AssertionError("row options are not key/value pairs")
+    return visible, dict(zip(fields[::2], fields[1::2], strict=True))
+
+
 class ConfigTest(unittest.TestCase):
     def test_missing_config_is_local_only_with_dms_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -318,17 +328,18 @@ class RofiProtocolTest(unittest.TestCase):
         self.assertIn("\x00prompt\x1fAgents", output)
         self.assertIn("\x00use-hot-keys\x1ftrue", output)
         self.assertIn("\x00markup-rows\x1ftrue", output)
-        self.assertIn("\x00meta\x1f", output)
-        self.assertIn("\x00active\x1ftrue", output)
-        self.assertIn(f"\x00icon\x1f{PROVIDER_ICON_PATHS['codex']}", output)
         self.assertNotIn("hello\nworld", output)
         row = next(line for line in output.split("\n") if line.startswith("hello"))
-        display = row.split("\x00display\x1f", 1)[1].split("\x00", 1)[0]
+        visible, options = parse_row_options(row)
+        self.assertEqual(1, row.count("\x00"))
+        self.assertIn("Codex", visible)
+        self.assertEqual("true", options["active"])
+        self.assertEqual(str(PROVIDER_ICON_PATHS["codex"]), options["icon"])
+        display = options["display"]
         self.assertIn(f"<b>hello world</b>{ROW_SEPARATOR}", display)
         self.assertIn('<span size="smaller" alpha="75%">', display)
         self.assertIn("snap  ·  ~/code/project  ·  0s  ·  active", display)
-        info = output.split("\x00info\x1f", 1)[1].split("\x00", 1)[0]
-        decoded = json.loads(info)
+        decoded = json.loads(options["info"])
         self.assertEqual(THREAD_ID, decoded["id"])
 
     def test_display_escapes_markup_and_hides_provider_while_filtering_keeps_it(self) -> None:
@@ -342,11 +353,12 @@ class RofiProtocolTest(unittest.TestCase):
         )
         output = render_snapshot({"sessions": [selected]}, now=100)
         row = next(line for line in output.split("\n") if line.startswith("A < & >"))
-        display = row.split("\x00display\x1f", 1)[1].split("\x00", 1)[0]
-        meta = row.split("\x00meta\x1f", 1)[1].split("\x00", 1)[0]
+        visible, options = parse_row_options(row)
+        display = options["display"]
+        meta = options["meta"]
         self.assertIn("<b>A &lt; &amp; &gt;</b>", display)
         self.assertNotIn("Claude Code", display)
-        self.assertIn("Claude Code", row)
+        self.assertIn("Claude Code", visible)
         self.assertIn("claude claude-code claude code", meta)
         self.assertIn("host  ·  /srv/project  ·  0s  ·  waiting", display)
 
@@ -358,10 +370,11 @@ class RofiProtocolTest(unittest.TestCase):
                     {"sessions": [session(kind, identifier, activityState="active")]}, now=100
                 )
                 row = next(line for line in output.split("\n") if line.startswith("hello"))
-                display = row.split("\x00display\x1f", 1)[1].split("\x00", 1)[0]
-                meta = row.split("\x00meta\x1f", 1)[1].split("\x00", 1)[0]
-                self.assertIn(f"\x00icon\x1f{PROVIDER_ICON_PATHS[kind]}", row)
-                self.assertIn(PROVIDER_LABELS[kind], row)
+                visible, options = parse_row_options(row)
+                display = options["display"]
+                meta = options["meta"]
+                self.assertEqual(str(PROVIDER_ICON_PATHS[kind]), options["icon"])
+                self.assertIn(PROVIDER_LABELS[kind], visible)
                 self.assertNotIn(PROVIDER_LABELS[kind], display)
                 self.assertIn(PROVIDER_SEARCH_TERMS[kind], meta)
 
@@ -389,8 +402,11 @@ class RofiProtocolTest(unittest.TestCase):
 
     def test_empty_snapshot_has_nonselectable_status_row(self) -> None:
         output = render_snapshot({"sessions": []}, message="No hosts reachable")
-        self.assertIn("No sessions · No hosts reachable", output)
-        self.assertIn("\x00nonselectable\x1ftrue", output)
+        row = next(line for line in output.split("\n") if line.startswith("No sessions"))
+        visible, options = parse_row_options(row)
+        self.assertEqual("No sessions · No hosts reachable", visible)
+        self.assertEqual({"nonselectable": "true", "urgent": "true"}, options)
+        self.assertEqual(1, row.count("\x00"))
 
     def test_selection_parser_validates_provider_ids(self) -> None:
         payload = {"kind": "opencode", "id": OPENCODE_ID}
