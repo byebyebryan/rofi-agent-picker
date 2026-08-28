@@ -24,6 +24,13 @@ LOCK_NAME = "refresh.lock"
 BACKGROUND_MARKER_NAME = "refresh.background"
 LOCK_WAIT_SECONDS = 30.0
 _PROVIDER_FOR_STAGE = {"threads": "codex", "claude": "claude", "opencode": "opencode"}
+_ROFI_CALLBACK_ENVIRONMENT = (
+    "ROFI_DATA",
+    "ROFI_INFO",
+    "ROFI_INPUT",
+    "ROFI_OUTSIDE",
+    "ROFI_RETV",
+)
 
 
 def cache_root() -> Path:
@@ -346,12 +353,16 @@ class CacheStore:
         finally:
             os.close(descriptor)
         try:
+            environment = os.environ.copy()
+            for key in _ROFI_CALLBACK_ENVIRONMENT:
+                environment.pop(key, None)
             subprocess.Popen(
                 command,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
+                env=environment,
             )
         except OSError:
             try:

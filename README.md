@@ -79,9 +79,10 @@ renders immediately.  A stale cache renders immediately with a short
 `Refreshing in background` message and starts at most one detached refresh.
 While that worker is running, the open dialog polls the marker about once per
 second and replaces the cached rows as soon as the fresh snapshot is written;
-the status then clears and polling stops.  A failed or stalled worker stops
-polling with an `Alt+R` retry message.  The new result is also visible the next
-time the picker opens or after `Alt+R`.
+the status then clears and polling stops.  A failed or stalled worker also
+stops polling and clears the transient status while leaving the cached rows
+usable.  The new result is also visible the next time the picker opens or
+after `Alt+R`.
 Per-host snapshots and rows from failed provider stages are retained while a
 host is unavailable, and current errors are summarized in the message area.
 There is intentionally no resident process or push-update channel.

@@ -18,7 +18,6 @@ from rofi_agent_picker.cache import CACHE_VERSION, CacheStore, build_snapshot
 from rofi_agent_picker.config import ConfigError, PickerConfig, config_from_mapping, load_config
 from rofi_agent_picker.rofi import (
     AUTO_REFRESH_DATA_PREFIX,
-    AUTO_REFRESH_STOPPED_MESSAGE,
     FALLBACK_ICON_PATH,
     PROVIDER_ICON_PATHS,
     PROVIDER_LABELS,
@@ -296,10 +295,24 @@ class CacheTest(unittest.TestCase):
 
     def test_background_refresh_marker_deduplicates_and_is_private(self) -> None:
         command = [sys.executable, "-c", "pass"]
-        with mock.patch("rofi_agent_picker.cache.subprocess.Popen") as popen:
+        callback_environment = {
+            "ROFI_DATA": "state",
+            "ROFI_INFO": "selection",
+            "ROFI_INPUT": "filter",
+            "ROFI_OUTSIDE": "123",
+            "ROFI_RETV": "0",
+        }
+        with (
+            mock.patch.dict(os.environ, {**callback_environment, "PICKER_TEST_VALUE": "kept"}),
+            mock.patch("rofi_agent_picker.cache.subprocess.Popen") as popen,
+        ):
             self.assertTrue(self.store.spawn_background(command))
             self.assertFalse(self.store.spawn_background(command))
             popen.assert_called_once()
+        child_environment = popen.call_args.kwargs["env"]
+        self.assertEqual("kept", child_environment["PICKER_TEST_VALUE"])
+        for key in callback_environment:
+            self.assertNotIn(key, child_environment)
         self.assertEqual(0o600, stat.S_IMODE(self.store.background_path.stat().st_mode))
         self.store.clear_background_marker()
 
@@ -502,7 +515,7 @@ class RofiProtocolTest(unittest.TestCase):
         )
         self.assertIn(f"\x00data\x1f{AUTO_REFRESH_DATA_PREFIX}", rendered)
 
-    def test_stale_mode_reports_spawn_failure_without_enabling_polling(self) -> None:
+    def test_stale_mode_clears_spawn_failure_status_without_enabling_polling(self) -> None:
         store = mock.Mock(spec=CacheStore)
         store.load.return_value = {"sessions": [session()], "errors": []}
         store.is_fresh.return_value = False
@@ -513,8 +526,9 @@ class RofiProtocolTest(unittest.TestCase):
             run_rofi({"ROFI_RETV": "0"}, store=store, config=self._config())
         store.spawn_background.assert_called_once()
         rendered = output.getvalue()
-        self.assertIn(AUTO_REFRESH_STOPPED_MESSAGE, rendered)
         self.assertNotIn("Refreshing in background", rendered)
+        self.assertNotIn("Background refresh stopped", rendered)
+        self.assertNotIn("\x00message\x1f", rendered)
         self.assertNotIn("\x00theme\x1f", rendered)
 
     def test_background_callback_polls_without_starting_another_refresh(self) -> None:
@@ -588,7 +602,7 @@ class RofiProtocolTest(unittest.TestCase):
         self.assertEqual(2, store.load.call_count)
         rendered = output.getvalue()
         self.assertIn("fresh", rendered)
-        self.assertNotIn(AUTO_REFRESH_STOPPED_MESSAGE, rendered)
+        self.assertNotIn("Background refresh stopped", rendered)
         self.assertNotIn("Refreshing in background", rendered)
         self.assertIn("\x00message\x1f", rendered)
         self.assertIn(
@@ -616,8 +630,9 @@ class RofiProtocolTest(unittest.TestCase):
                 store.refresh.assert_not_called()
                 store.spawn_background.assert_not_called()
                 rendered = output.getvalue()
-                self.assertIn(AUTO_REFRESH_STOPPED_MESSAGE, rendered)
+                self.assertNotIn("Background refresh stopped", rendered)
                 self.assertNotIn("Refreshing in background", rendered)
+                self.assertIn("\x00message\x1f\t", rendered)
                 self.assertIn(
                     '\x00theme\x1fconfiguration { timeout { delay: 0; action: "kb-custom-19"; } }',
                     rendered,

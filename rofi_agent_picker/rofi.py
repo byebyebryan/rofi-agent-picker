@@ -29,7 +29,6 @@ AUTO_REFRESH_POLL_SECONDS = 1
 AUTO_REFRESH_MAX_SECONDS = 30
 AUTO_REFRESH_DATA_PREFIX = "background-refresh:"
 AUTO_REFRESH_IDLE_DATA = "idle"
-AUTO_REFRESH_STOPPED_MESSAGE = "Background refresh stopped · press Alt+R to retry"
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 _DISPLAY_CONTROL_CHARS = re.compile(r"[\x00-\x09\x0b-\x1f\x7f]")
 
@@ -491,9 +490,10 @@ def _auto_refresh_callback(
 
     return render_snapshot(
         snapshot,
-        message=AUTO_REFRESH_STOPPED_MESSAGE,
+        message=summarize_errors(snapshot.get("errors", [])) if snapshot is not None else "",
         preserve=True,
         timeout=False,
+        clear_message=True,
         continuation=True,
     )
 
@@ -608,7 +608,7 @@ def run_rofi(
                     deadline = time.time() + AUTO_REFRESH_MAX_SECONDS
             message = _message_for_cache(store, snapshot, config, fresh=fresh)
             if not fresh and not polling:
-                message = AUTO_REFRESH_STOPPED_MESSAGE
+                message = summarize_errors(snapshot.get("errors", []))
             print(
                 render_snapshot(
                     snapshot,
@@ -665,7 +665,7 @@ def run_rofi(
             message = (
                 _message_for_cache(store, snapshot, config, fresh=False)
                 if polling
-                else AUTO_REFRESH_STOPPED_MESSAGE
+                else summarize_errors(snapshot.get("errors", []))
             )
             print(
                 render_snapshot(
