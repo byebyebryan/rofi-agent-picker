@@ -446,12 +446,40 @@ def _process_table() -> tuple[dict[int, int], set[int], set[int], set[int]]:
     return parents, codex_pids, claude_pids, opencode_pids
 
 
-def _thread_id_for_process(pid: int) -> str | None:
-    fd_dir = Path(f"/proc/{pid}/fd")
+def _rollout_is_subagent(path: str) -> bool | None:
+    """Return whether a rollout's session metadata identifies a subagent.
+
+    A process can keep several Codex rollout files open at once.  The first
+    line is the session metadata for current and recent files, while older or
+    racing files may be unreadable.  ``None`` deliberately means unknown so a
+    legacy or inaccessible rollout can still be used as a best-effort
+    fallback.
+    """
+
     try:
-        entries = list(fd_dir.iterdir())
-    except (FileNotFoundError, PermissionError):
+        with Path(path).open(encoding="utf-8") as stream:
+            record = json.loads(stream.readline())
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return None
+    if not isinstance(record, Mapping) or record.get("type") != "session_meta":
+        return None
+    payload = record.get("payload")
+    if not isinstance(payload, Mapping):
+        return None
+    source = payload.get("source")
+    return isinstance(source, Mapping) and "subagent" in source
+
+
+def _rollout_candidates_for_process(
+    pid: int, proc_root: str | Path = "/proc"
+) -> list[tuple[str, bool | None]]:
+    fd_dir = Path(proc_root) / str(pid) / "fd"
+    try:
+        entries = sorted(fd_dir.iterdir(), key=lambda entry: entry.name)
+    except (FileNotFoundError, PermissionError, OSError):
+        return []
+
+    candidates: dict[str, bool | None] = {}
     for entry in entries:
         try:
             target = os.readlink(entry)
@@ -460,8 +488,27 @@ def _thread_id_for_process(pid: int) -> str | None:
         if "rollout-" not in target or ".jsonl" not in target:
             continue
         match = UUID_PATTERN.search(target)
-        if match:
-            return match.group(1).lower()
+        if not match:
+            continue
+        thread_id = match.group(1).lower()
+        is_subagent = _rollout_is_subagent(target)
+        if thread_id not in candidates or (
+            candidates[thread_id] is True and is_subagent is not True
+        ):
+            candidates[thread_id] = is_subagent
+    return sorted(candidates.items())
+
+
+def _thread_id_for_process(pid: int, proc_root: str | Path = "/proc") -> str | None:
+    candidates = _rollout_candidates_for_process(pid, proc_root)
+    for is_subagent in (False, None):
+        roots = [
+            thread_id
+            for thread_id, candidate_is_subagent in candidates
+            if candidate_is_subagent is is_subagent
+        ]
+        if roots:
+            return roots[0]
     return None
 
 
@@ -629,15 +676,18 @@ def active_snapshot() -> dict[str, Any]:
     parents, codex_pids, claude_pids, opencode_pids = _process_table()
     pane_sessions, option_sessions, claude_option_sessions, opencode_option_sessions = _tmux_panes()
     active: dict[str, dict[str, Any]] = {}
+    option_ids = {tmux_session: thread_id for thread_id, tmux_session in option_sessions.items()}
 
     for pid in codex_pids:
-        thread_id = _thread_id_for_process(pid)
+        tmux_session = _tmux_session_for_process(pid, parents, pane_sessions)
+        thread_id = option_ids.get(tmux_session or "")
+        if thread_id is None:
+            thread_id = _thread_id_for_process(pid)
         if thread_id is None:
             continue
 
-        tmux_session = option_sessions.get(thread_id)
         if tmux_session is None:
-            tmux_session = _tmux_session_for_process(pid, parents, pane_sessions)
+            tmux_session = option_sessions.get(thread_id)
 
         item = {"pid": pid, "tmuxSession": tmux_session}
         previous = active.get(thread_id)
@@ -770,12 +820,28 @@ def tmux_session_for_process(pid):
         current = parents.get(current, 0)
     return None
 
-for pid in codex_pids:
-    thread_id = None
+def rollout_is_subagent(path):
     try:
-        entries = list((proc_root / str(pid) / "fd").iterdir())
-    except (FileNotFoundError, PermissionError):
-        entries = []
+        with Path(path).open(encoding="utf-8") as stream:
+            record = json.loads(stream.readline())
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(record, dict) or record.get("type") != "session_meta":
+        return None
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    source = payload.get("source")
+    return isinstance(source, dict) and "subagent" in source
+
+def thread_id_for_process(pid):
+    fd_dir = proc_root / str(pid) / "fd"
+    try:
+        entries = sorted(fd_dir.iterdir(), key=lambda entry: entry.name)
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+
+    candidates = {}
     for entry in entries:
         try:
             target = os.readlink(entry)
@@ -784,15 +850,38 @@ for pid in codex_pids:
         if "rollout-" not in target or ".jsonl" not in target:
             continue
         match = uuid_pattern.search(target)
-        if match:
-            thread_id = match.group(1).lower()
-            break
+        if not match:
+            continue
+        thread_id = match.group(1).lower()
+        is_subagent = rollout_is_subagent(target)
+        if thread_id not in candidates or (
+            candidates[thread_id] is True and is_subagent is not True
+        ):
+            candidates[thread_id] = is_subagent
+
+    for is_subagent in (False, None):
+        roots = sorted(
+            thread_id
+            for thread_id, candidate_is_subagent in candidates.items()
+            if candidate_is_subagent is is_subagent
+        )
+        if roots:
+            return roots[0]
+    return None
+
+option_ids = {
+    tmux_session: thread_id for thread_id, tmux_session in option_sessions.items()
+}
+for pid in codex_pids:
+    tmux_session = tmux_session_for_process(pid)
+    thread_id = option_ids.get(tmux_session or "")
+    if thread_id is None:
+        thread_id = thread_id_for_process(pid)
     if thread_id is None:
         continue
 
-    tmux_session = option_sessions.get(thread_id)
     if tmux_session is None:
-        tmux_session = tmux_session_for_process(pid)
+        tmux_session = option_sessions.get(thread_id)
     item = {"pid": pid, "tmuxSession": tmux_session}
     previous = active.get(thread_id)
     if previous is None or (previous.get("tmuxSession") is None and tmux_session):

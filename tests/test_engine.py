@@ -87,6 +87,56 @@ class CodexThreadTest(unittest.TestCase):
         self.assertEqual({300}, claude_pids)
         self.assertEqual(set(), opencode_pids)
 
+    def test_thread_id_for_process_prefers_root_rollout_over_subagent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            proc_root = root / "proc"
+            fd_dir = proc_root / "200" / "fd"
+            fd_dir.mkdir(parents=True)
+
+            root_rollout = root / f"rollout-2026-07-21T00-00-00-{THREAD_A}.jsonl"
+            root_rollout.write_text(
+                json.dumps({"type": "session_meta", "payload": {"source": "cli"}}) + "\n"
+            )
+            subagent_rollout = root / f"rollout-2026-07-21T00-00-01-{THREAD_B}.jsonl"
+            subagent_rollout.write_text(
+                json.dumps(
+                    {
+                        "type": "session_meta",
+                        "payload": {
+                            "source": {"subagent": {"thread_spawn": {"parent_thread_id": THREAD_A}}}
+                        },
+                    }
+                )
+                + "\n"
+            )
+            (fd_dir / "3").symlink_to(subagent_rollout)
+            (fd_dir / "4").symlink_to(root_rollout)
+
+            self.assertEqual(THREAD_A, picker._thread_id_for_process(200, proc_root))
+
+    def test_active_snapshot_prefers_managed_tmux_thread_id(self) -> None:
+        with (
+            mock.patch.object(
+                picker,
+                "_process_table",
+                return_value=({200: 400}, {200}, set(), set()),
+            ),
+            mock.patch.object(
+                picker,
+                "_tmux_panes",
+                return_value=({400: "codex-picker"}, {THREAD_A: "codex-picker"}, {}, {}),
+            ),
+            mock.patch.object(picker, "_thread_id_for_process", return_value=THREAD_B) as detect,
+        ):
+            active = picker.active_snapshot()
+
+        self.assertEqual(
+            {THREAD_A: {"pid": 200, "tmuxSession": "codex-picker"}},
+            active["active"],
+        )
+        detect.assert_not_called()
+
     def test_remote_active_probe_matches_managed_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -151,6 +201,102 @@ class CodexThreadTest(unittest.TestCase):
             payload["opencodeActive"],
         )
         self.assertTrue(payload["opencodeInstalled"])
+
+    def test_remote_active_probe_prefers_managed_id_over_fd_rollout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            proc_root = root / "proc"
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+
+            process_dir = proc_root / "200"
+            fd_dir = process_dir / "fd"
+            fd_dir.mkdir(parents=True)
+            (process_dir / "cmdline").write_bytes(b"codex\0")
+            (fd_dir / "3").symlink_to(root / f"rollout-2026-07-21T00-00-00-{THREAD_B}.jsonl")
+
+            (bin_dir / "ps").write_text("#!/bin/sh\nprintf '%s\\n' '200 400 codex'\n")
+            (bin_dir / "tmux").write_text(
+                f"#!/bin/sh\nprintf 'codex-session\\t400\\t{THREAD_A}\\t\\n'\n"
+            )
+            for executable in (bin_dir / "ps", bin_dir / "tmux"):
+                executable.chmod(0o755)
+
+            environment = {
+                **os.environ,
+                "DMS_AGENT_PICKER_PROC_ROOT": str(proc_root),
+                "PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", ""),
+            }
+            result = subprocess.run(
+                [sys.executable, "-c", picker.ACTIVE_PROBE],
+                capture_output=True,
+                check=False,
+                env=environment,
+                text=True,
+            )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(
+            {THREAD_A: {"pid": 200, "tmuxSession": "codex-session"}},
+            payload["active"],
+        )
+
+    def test_remote_active_probe_prefers_root_rollout_over_subagent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            proc_root = root / "proc"
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+
+            process_dir = proc_root / "200"
+            fd_dir = process_dir / "fd"
+            fd_dir.mkdir(parents=True)
+            (process_dir / "cmdline").write_bytes(b"codex\0")
+
+            root_rollout = root / f"rollout-2026-07-21T00-00-00-{THREAD_A}.jsonl"
+            root_rollout.write_text(
+                json.dumps({"type": "session_meta", "payload": {"source": "cli"}}) + "\n"
+            )
+            subagent_rollout = root / f"rollout-2026-07-21T00-00-01-{THREAD_B}.jsonl"
+            subagent_rollout.write_text(
+                json.dumps(
+                    {
+                        "type": "session_meta",
+                        "payload": {
+                            "source": {"subagent": {"thread_spawn": {"parent_thread_id": THREAD_A}}}
+                        },
+                    }
+                )
+                + "\n"
+            )
+            (fd_dir / "3").symlink_to(subagent_rollout)
+            (fd_dir / "4").symlink_to(root_rollout)
+
+            (bin_dir / "ps").write_text("#!/bin/sh\nprintf '%s\\n' '200 400 codex'\n")
+            (bin_dir / "tmux").write_text("#!/bin/sh\nprintf 'codex-session\\t400\\t\\n'\n")
+            for executable in (bin_dir / "ps", bin_dir / "tmux"):
+                executable.chmod(0o755)
+
+            environment = {
+                **os.environ,
+                "DMS_AGENT_PICKER_PROC_ROOT": str(proc_root),
+                "PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", ""),
+            }
+            result = subprocess.run(
+                [sys.executable, "-c", picker.ACTIVE_PROBE],
+                capture_output=True,
+                check=False,
+                env=environment,
+                text=True,
+            )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(
+            {THREAD_A: {"pid": 200, "tmuxSession": "codex-session"}},
+            payload["active"],
+        )
 
 
 class StreamingSessionTest(unittest.TestCase):
