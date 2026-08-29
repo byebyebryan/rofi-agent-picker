@@ -21,6 +21,7 @@ from rofi_agent_picker.rofi import (
     ERROR_NOTICE_DATA_PREFIX,
     ERROR_NOTICE_SECONDS,
     FALLBACK_ICON_PATH,
+    HOST_GROUP_ICON,
     PROVIDER_ICON_PATHS,
     PROVIDER_LABELS,
     PROVIDER_SEARCH_TERMS,
@@ -498,9 +499,12 @@ class RofiProtocolTest(unittest.TestCase):
         self.assertEqual(["Alpha", "zeta"], [visible for visible, _ in parsed])
         alpha_options = parsed[0][1]
         zeta_options = parsed[1][1]
-        self.assertEqual(str(FALLBACK_ICON_PATH), alpha_options["icon"])
+        self.assertEqual(HOST_GROUP_ICON, alpha_options["icon"])
         self.assertIn("1 session", alpha_options["display"])
+        self.assertIn("›", alpha_options["display"])
+        self.assertNotIn("active", alpha_options)
         self.assertIn("2 sessions  ·  1 active  ·  newest 0s", zeta_options["display"])
+        self.assertEqual("true", zeta_options["active"])
         group = json.loads(zeta_options["info"])
         self.assertEqual({"type": "group", "groupType": "host", "value": "zeta"}, group)
 
@@ -512,6 +516,8 @@ class RofiProtocolTest(unittest.TestCase):
         self.assertEqual(["Codex", "Claude Code", "OpenCode"], [visible for visible, _ in parsed])
         for kind, (_, options) in zip(PROVIDER_LABELS, parsed, strict=True):
             self.assertEqual(str(PROVIDER_ICON_PATHS[kind]), options["icon"])
+            self.assertIn("›", options["display"])
+            self.assertEqual(kind == "codex", options.get("active") == "true")
 
     def test_recent_and_nested_sessions_sort_valid_recency_then_identity(self) -> None:
         sessions = [

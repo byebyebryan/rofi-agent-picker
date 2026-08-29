@@ -40,8 +40,11 @@ hosts by the newest session they contain.  The `Providers` view uses the
 stable Codex, Claude Code, and OpenCode order and omits empty providers.
 Group rows show the session count, any active count, and newest age.  Their
 metadata is typed JSON, so opening a session never depends on parsing visible
-text.  Breadcrumb prompts identify the current root or nested group, for
-example `Agents › Hosts › workstation` or `Agents › Providers › Codex`.
+text.  A trailing `›` and host/provider icon make drill-down groups easy to
+recognize; groups containing active sessions receive the same active styling as
+session rows.  Breadcrumb prompts identify the current root or nested group,
+for example `Agents › Hosts › workstation` or
+`Agents › Providers › Codex`.
 
 Rows use a two-line layout: the session title is primary, while a smaller
 secondary line shows the display host, shortened working directory, age, and

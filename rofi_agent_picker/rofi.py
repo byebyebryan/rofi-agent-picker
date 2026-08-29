@@ -58,6 +58,7 @@ PROVIDER_ICON_PATHS = {
     for kind in PROVIDER_LABELS
 }
 FALLBACK_ICON_PATH = Path(__file__).resolve().parent / "assets" / "providers" / "generic.svg"
+HOST_GROUP_ICON = "network-server-symbolic"
 ROW_SEPARATOR = "\n"
 ROFI_RECORD_SEPARATOR = "\t"
 ROFI_DELIMITER_VALUE = r"\t"
@@ -519,7 +520,7 @@ def _group_display(group: Mapping[str, Any], now: float | None = None) -> str:
         members = []
     sessions = [item for item in members if isinstance(item, Mapping)]
     return (
-        f"<b>{_pango_escape(label)}</b>"
+        f'<b>{_pango_escape(label)}</b><span alpha="60%">  ›</span>'
         f'{ROW_SEPARATOR}<span size="smaller" alpha="75%">'
         f"{_pango_escape(_group_secondary(sessions, now))}</span>"
     )
@@ -826,13 +827,15 @@ def render_snapshot(
                 icon = _provider_icon(value)
             else:
                 search_metadata = " ".join((label, "host", "hosts"))
-                icon = _provider_icon("unknown")
+                icon = HOST_GROUP_ICON
             options = [
                 ("info", info),
                 ("meta", search_metadata),
                 ("icon", icon),
                 ("display", _group_display(group, now)),
             ]
+            if any(bool(item.get("active")) for item in group["sessions"]):
+                options.append(("active", "true"))
             rendered_rows.append(label + _row_options(options))
             emitted += 1
 
