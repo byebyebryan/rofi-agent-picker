@@ -28,6 +28,7 @@ ROFI_RETV_CUSTOM_2 = 11
 ROFI_RETV_CUSTOM_3 = 12
 ROFI_RETV_CUSTOM_4 = 13
 ROFI_RETV_CUSTOM_5 = 14
+ROFI_RETV_CUSTOM_6 = 15
 ROFI_RETV_CUSTOM_19 = 28
 MAX_MESSAGE_LENGTH = 360
 FORCED_REFRESH_TIMEOUT_SECONDS = 30
@@ -1242,6 +1243,10 @@ def run_rofi(
     continuation_state = _parse_continuation_state(environ.get("ROFI_DATA"))
     navigation = continuation_state.navigation
     store = store or CacheStore()
+    if retv == ROFI_RETV_CUSTOM_6 and not navigation.nested:
+        # Escape is an unconditional root-level exit, including when loading
+        # the configuration would otherwise produce an error row.
+        return 0
     try:
         config = config or load_config()
     except ConfigError as exc:
@@ -1355,101 +1360,33 @@ def run_rofi(
             )
             return 0
 
-    if retv == ROFI_RETV_CUSTOM_2:
-        # Right is an explicit drill/open action.  A missing selection (for
-        # example, the empty status row) is a harmless no-op that retains the
-        # current filter and cursor.
-        snapshot = store.load(config.fingerprint)
-        raw_selection = environ.get("ROFI_INFO")
-        try:
-            row_type, selected = _parse_row_selection(raw_selection)
-        except engine.PickerError:
-            print(
-                _render_continuation(
-                    snapshot,
-                    continuation_state,
-                    preserve=True,
-                    navigation=navigation,
-                ),
-                end="",
-            )
-            return 0
-        if row_type == "group":
-            try:
-                next_navigation = _enter_group(navigation, selected, snapshot)
-            except engine.PickerError as exc:
-                print(
-                    _render_error_notice(
-                        snapshot,
-                        message=f"Unable to navigate: {sanitize(exc)}",
-                        preserve=True,
-                        continuation=True,
-                        refresh_deadline=continuation_state.active().refresh_deadline,
-                        navigation=navigation,
-                    ),
-                    end="",
-                )
-                return 0
-            print(
-                _render_continuation(
-                    snapshot,
-                    continuation_state,
-                    navigation=next_navigation,
-                ),
-                end="",
-            )
-            return 0
-        try:
-            _open_selection(selected, config)
-        except (engine.PickerError, OSError, subprocess.SubprocessError) as exc:
-            print(
-                _render_error_notice(
-                    snapshot,
-                    message=f"Unable to open session: {sanitize(exc)}",
-                    preserve=True,
-                    continuation=True,
-                    refresh_deadline=continuation_state.active().refresh_deadline,
-                    navigation=navigation,
-                ),
-                end="",
-            )
-        return 0
-
-    if retv == ROFI_RETV_CUSTOM_3:
-        snapshot = store.load(config.fingerprint)
-        if navigation.nested:
-            # Returning to a root is a navigation transition, so clear the
-            # filter and selection while retaining the current view lens.
-            print(
-                _render_continuation(
-                    snapshot,
-                    continuation_state,
-                    navigation=navigation.root(),
-                ),
-                end="",
-            )
-        else:
-            # Left at a root has no parent.  Keep the list usable and retain
-            # the user's current filter/selection.
-            print(
-                _render_continuation(
-                    snapshot,
-                    continuation_state,
-                    preserve=True,
-                    navigation=navigation,
-                ),
-                end="",
-            )
-        return 0
-
-    if retv in {ROFI_RETV_CUSTOM_4, ROFI_RETV_CUSTOM_5}:
-        direction = 1 if retv == ROFI_RETV_CUSTOM_4 else -1
+    if retv in {ROFI_RETV_CUSTOM_2, ROFI_RETV_CUSTOM_3, ROFI_RETV_CUSTOM_4, ROFI_RETV_CUSTOM_5}:
+        # Horizontal navigation always changes the top-level lens.  Nested
+        # groups therefore switch directly to the adjacent root and discard
+        # their scope, filter, and cursor while retaining live continuation
+        # state.
+        direction = 1 if retv in {ROFI_RETV_CUSTOM_2, ROFI_RETV_CUSTOM_4} else -1
         snapshot = store.load(config.fingerprint)
         print(
             _render_continuation(
                 snapshot,
                 continuation_state,
                 navigation=_cycled_root(navigation, direction),
+            ),
+            end="",
+        )
+        return 0
+
+    if retv == ROFI_RETV_CUSTOM_6:
+        # Escape is Back inside a group and Exit at a root.  Returning no
+        # records is the Rofi script-mode close signal, so do not render a
+        # replacement list for the root case.
+        snapshot = store.load(config.fingerprint)
+        print(
+            _render_continuation(
+                snapshot,
+                continuation_state,
+                navigation=navigation.root(),
             ),
             end="",
         )

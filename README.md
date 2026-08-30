@@ -20,20 +20,22 @@ The executable can be run directly from a checkout:
 ./bin/rofi-agent-picker list | jq
 rofi -show agent -modes "agent:$(pwd)/bin/rofi-agent-picker" \
   -kb-custom-1 Alt+r -kb-custom-2 Right -kb-custom-3 Left \
-  -kb-custom-4 Tab -kb-custom-5 ISO_Left_Tab \
+  -kb-custom-4 Tab -kb-custom-5 ISO_Left_Tab -kb-custom-6 Escape \
+  -kb-cancel Control+g \
   -kb-move-char-forward Control+f -kb-move-char-back Control+b \
   -kb-element-next "" -kb-element-prev "" -eh 2
 ```
 
 The normal Rofi invocation is configured as a script mode.  `Mod+A` or a
 similar Niri binding can invoke it with `rofi -show agent`.  The picker opens
-in `Agents › Recent`, a mixed newest-first list.  `Tab` and `Shift+Tab` cycle
-the top-level `Recent`, `Hosts`, and `Providers` views; `Enter` or `Right`
-opens a host/provider group and then opens a session, while `Left` returns to a
-view root.  Navigation transitions clear the filter and selection.  `Alt+R`
-performs a bounded foreground refresh.  Custom input and deletion remain
-disabled.  Rofi must be launched with `-eh 2` so each list element reserves
-height for both display lines.
+in `Agents › Recent`, a mixed newest-first list.  Left and Right cycle the
+top-level `Recent`, `Hosts`, and `Providers` views; `Enter` enters a
+host/provider group or opens a session.  `Escape` returns to a view root when
+nested and exits from a root; `Ctrl+G` always exits.  `Tab` and `Shift+Tab`
+remain compatibility aliases for next/previous view.  Navigation transitions
+clear the filter and selection.  `Alt+R` performs a bounded foreground refresh.
+Custom input and deletion remain disabled.  Rofi must be launched with `-eh 2`
+so each list element reserves height for both display lines.
 
 The `Hosts` view groups sessions by their logical displayed host and orders
 hosts by the newest session they contain.  The `Providers` view uses the

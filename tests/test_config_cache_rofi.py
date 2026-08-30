@@ -32,6 +32,7 @@ from rofi_agent_picker.rofi import (
     ROFI_RETV_CUSTOM_3,
     ROFI_RETV_CUSTOM_4,
     ROFI_RETV_CUSTOM_5,
+    ROFI_RETV_CUSTOM_6,
     ROFI_RETV_CUSTOM_19,
     ROW_SEPARATOR,
     NavigationState,
@@ -621,7 +622,7 @@ class RofiProtocolTest(unittest.TestCase):
             rendered,
         )
 
-    def test_navigation_callbacks_preserve_mixed_lifecycle_and_noop_filter(self) -> None:
+    def test_navigation_callbacks_preserve_mixed_lifecycle_and_clear_filter(self) -> None:
         snapshot = {"sessions": [session()], "errors": []}
         store = mock.Mock(spec=CacheStore)
         store.load.return_value = snapshot
@@ -657,30 +658,34 @@ class RofiProtocolTest(unittest.TestCase):
         self.assertNotIn("\x00keep-filter\x1ftrue", cycled)
 
         provider_root = NavigationState("providers")
-        _, rows = parse_rendered_records(render_snapshot(snapshot, navigation=provider_root))
-        _, options = parse_row_options(rows[0])
-        drilled = invoke(ROFI_RETV_CUSTOM_2, provider_root, options["info"])
-        self.assertIn("Agents › Providers › Codex", drilled)
-        self.assertIn(notice, drilled)
-        self.assertIn("background-refresh:1010;error-notice:1003:", drilled)
-        self.assertNotIn("\x00keep-filter\x1ftrue", drilled)
+        cycled_right = invoke(ROFI_RETV_CUSTOM_2, provider_root)
+        self.assertIn("Agents › Recent", cycled_right)
+        self.assertIn(notice, cycled_right)
+        self.assertIn("background-refresh:1010;error-notice:1003:", cycled_right)
+        self.assertNotIn("\x00keep-filter\x1ftrue", cycled_right)
 
         nested = NavigationState("providers", "provider", "codex")
-        backed = invoke(ROFI_RETV_CUSTOM_3, nested)
+        cycled_left = invoke(ROFI_RETV_CUSTOM_3, nested)
+        self.assertIn("Agents › Hosts", cycled_left)
+        self.assertIn(notice, cycled_left)
+        self.assertIn("background-refresh:1010;error-notice:1003:", cycled_left)
+        self.assertNotIn("\x00keep-filter\x1ftrue", cycled_left)
+
+        backed = invoke(ROFI_RETV_CUSTOM_6, nested)
         self.assertIn("Agents › Providers\t", backed)
         self.assertIn(notice, backed)
         self.assertIn("background-refresh:1010;error-notice:1003:", backed)
         self.assertNotIn("\x00keep-filter\x1ftrue", backed)
 
-        root_noop = invoke(ROFI_RETV_CUSTOM_3, provider_root)
-        self.assertIn("Agents › Providers", root_noop)
-        self.assertIn(notice, root_noop)
-        self.assertIn("\x00keep-filter\x1ftrue", root_noop)
-        right_noop = invoke(ROFI_RETV_CUSTOM_2, provider_root)
-        self.assertIn("Agents › Providers", right_noop)
-        self.assertIn(notice, right_noop)
-        self.assertIn("\x00keep-selection\x1ftrue", right_noop)
-        self.assertIn("background-refresh:1010;error-notice:1003:", right_noop)
+        cycled_left = invoke(ROFI_RETV_CUSTOM_3, provider_root)
+        self.assertIn("Agents › Hosts", cycled_left)
+        self.assertIn(notice, cycled_left)
+        self.assertNotIn("\x00keep-filter\x1ftrue", cycled_left)
+        cycled_right = invoke(ROFI_RETV_CUSTOM_2, provider_root)
+        self.assertIn("Agents › Recent", cycled_right)
+        self.assertIn(notice, cycled_right)
+        self.assertNotIn("\x00keep-selection\x1ftrue", cycled_right)
+        self.assertIn("background-refresh:1010;error-notice:1003:", cycled_right)
 
     def test_nested_lists_filter_scope_and_sort_newest_first(self) -> None:
         sessions = [
@@ -738,7 +743,7 @@ class RofiProtocolTest(unittest.TestCase):
             ):
                 run_rofi(
                     {
-                        "ROFI_RETV": str(ROFI_RETV_CUSTOM_2),
+                        "ROFI_RETV": "1",
                         "ROFI_INFO": selection_payload(session()),
                         "ROFI_DATA": data,
                     },
@@ -775,6 +780,38 @@ class RofiProtocolTest(unittest.TestCase):
         self.assertIn("navigation:", rendered)
         self.assertIn("claude", rendered)
 
+    def test_left_right_cycle_from_roots_and_nested_and_wrap_in_both_directions(self) -> None:
+        store = mock.Mock(spec=CacheStore)
+        store.load.return_value = {"sessions": [session()], "errors": []}
+        for retv, state, expected in (
+            (ROFI_RETV_CUSTOM_2, NavigationState("recent"), "Hosts"),
+            (ROFI_RETV_CUSTOM_2, NavigationState("hosts"), "Providers"),
+            (ROFI_RETV_CUSTOM_2, NavigationState("providers"), "Recent"),
+            (ROFI_RETV_CUSTOM_2, NavigationState("hosts", "host", "workstation"), "Providers"),
+            (ROFI_RETV_CUSTOM_3, NavigationState("recent"), "Providers"),
+            (ROFI_RETV_CUSTOM_3, NavigationState("providers"), "Hosts"),
+            (ROFI_RETV_CUSTOM_3, NavigationState("hosts"), "Recent"),
+            (ROFI_RETV_CUSTOM_3, NavigationState("providers", "provider", "codex"), "Hosts"),
+        ):
+            output = io.StringIO()
+            with (
+                mock.patch("sys.stdout", output),
+                mock.patch("rofi_agent_picker.rofi.time.time", return_value=1000),
+            ):
+                run_rofi(
+                    {
+                        "ROFI_RETV": str(retv),
+                        "ROFI_DATA": _refresh_data(1010, 1003, "offline", navigation=state),
+                    },
+                    store=store,
+                    config=self._config(),
+                )
+            rendered = output.getvalue()
+            self.assertIn(f"\x00prompt\x1fAgents › {expected}", rendered)
+            self.assertIn("background-refresh:1010;error-notice:1003:", rendered)
+            self.assertNotIn("\x00keep-filter\x1ftrue", rendered)
+            self.assertNotIn("\x00keep-selection\x1ftrue", rendered)
+
     def test_tab_cycles_from_nested_and_wraps_in_both_directions(self) -> None:
         store = mock.Mock(spec=CacheStore)
         store.load.return_value = {"sessions": [session()], "errors": []}
@@ -798,7 +835,63 @@ class RofiProtocolTest(unittest.TestCase):
             self.assertNotIn("\x00keep-filter\x1ftrue", rendered)
             self.assertNotIn("\x00keep-selection\x1ftrue", rendered)
 
-    def test_enter_and_right_drill_groups_left_returns_root_and_right_opens_leaf(self) -> None:
+    def test_escape_backs_from_nested_and_exits_at_root(self) -> None:
+        store = mock.Mock(spec=CacheStore)
+        store.load.return_value = {"sessions": [session()], "errors": []}
+        nested = NavigationState("hosts", "host", "workstation")
+        output = io.StringIO()
+        with (
+            mock.patch("sys.stdout", output),
+            mock.patch("rofi_agent_picker.rofi.time.time", return_value=1000),
+        ):
+            result = run_rofi(
+                {
+                    "ROFI_RETV": str(ROFI_RETV_CUSTOM_6),
+                    "ROFI_DATA": _refresh_data(1010, 1003, "offline", navigation=nested),
+                },
+                store=store,
+                config=self._config(),
+            )
+        self.assertEqual(0, result)
+        backed = output.getvalue()
+        self.assertIn("\x00prompt\x1fAgents › Hosts", backed)
+        self.assertIn("background-refresh:1010;error-notice:1003:", backed)
+        self.assertNotIn("\x00keep-filter\x1ftrue", backed)
+        self.assertNotIn("\x00keep-selection\x1ftrue", backed)
+
+        output = io.StringIO()
+        with mock.patch("sys.stdout", output):
+            result = run_rofi(
+                {
+                    "ROFI_RETV": str(ROFI_RETV_CUSTOM_6),
+                    "ROFI_DATA": _refresh_data(
+                        1010, 1003, "offline", navigation=NavigationState("hosts")
+                    ),
+                },
+                store=store,
+                config=self._config(),
+            )
+        self.assertEqual(0, result)
+        self.assertEqual("", output.getvalue())
+
+        output = io.StringIO()
+        with (
+            mock.patch("sys.stdout", output),
+            mock.patch(
+                "rofi_agent_picker.rofi.load_config", side_effect=ConfigError("invalid config")
+            ),
+        ):
+            result = run_rofi(
+                {
+                    "ROFI_RETV": str(ROFI_RETV_CUSTOM_6),
+                    "ROFI_DATA": _navigation_data(NavigationState("providers")),
+                },
+                store=store,
+            )
+        self.assertEqual(0, result)
+        self.assertEqual("", output.getvalue())
+
+    def test_enter_drills_groups_and_opens_session_leaves(self) -> None:
         snapshot = {"sessions": [session()], "errors": []}
         store = mock.Mock(spec=CacheStore)
         store.load.return_value = snapshot
@@ -826,7 +919,7 @@ class RofiProtocolTest(unittest.TestCase):
         with mock.patch("sys.stdout", output):
             run_rofi(
                 {
-                    "ROFI_RETV": str(ROFI_RETV_CUSTOM_3),
+                    "ROFI_RETV": str(ROFI_RETV_CUSTOM_6),
                     "ROFI_DATA": _navigation_data(NavigationState("hosts", "host", "workstation")),
                 },
                 store=store,
@@ -840,7 +933,7 @@ class RofiProtocolTest(unittest.TestCase):
                 0,
                 run_rofi(
                     {
-                        "ROFI_RETV": str(ROFI_RETV_CUSTOM_2),
+                        "ROFI_RETV": "1",
                         "ROFI_INFO": selection_payload(session()),
                         "ROFI_DATA": _navigation_data(
                             NavigationState("hosts", "host", "workstation")
