@@ -1364,7 +1364,9 @@ def run_rofi(
         # Horizontal navigation always changes the top-level lens.  Nested
         # groups therefore switch directly to the adjacent root and discard
         # their scope, filter, and cursor while retaining live continuation
-        # state.
+        # state.  Custom 4/5 remain accepted for old/manual invocations, but
+        # are intentionally unadvertised: supported bindings leave Tab and
+        # Shift+Tab as Rofi's normal row navigation.
         direction = 1 if retv in {ROFI_RETV_CUSTOM_2, ROFI_RETV_CUSTOM_4} else -1
         snapshot = store.load(config.fingerprint)
         print(

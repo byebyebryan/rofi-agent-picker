@@ -219,6 +219,19 @@ class ProjectMetadataTest(unittest.TestCase):
         self.assertIn("Current refresh/provider errors are shown for about three seconds", readme)
         self.assertIn("./scripts/check", workflow)
 
+    def test_readme_keeps_tab_for_rows_and_left_right_for_views(self) -> None:
+        readme = (self.root / "README.md").read_text()
+        self.assertIn("-kb-custom-2 Right -kb-custom-3 Left", readme)
+        self.assertIn(
+            "`Tab` and `Shift+Tab`\nuse Rofi's normal next/previous row navigation",
+            readme,
+        )
+        self.assertNotIn("-kb-custom-4 Tab", readme)
+        self.assertNotIn("-kb-custom-5 ISO_Left_Tab", readme)
+        self.assertNotIn("-kb-element-next", readme)
+        self.assertNotIn("-kb-element-prev", readme)
+        self.assertNotIn("compatibility aliases for next/previous view", readme)
+
     def test_runtime_dependencies_are_empty_and_optional_providers_are_documented(self) -> None:
         project = tomllib.loads((self.root / "pyproject.toml").read_text())
         self.assertEqual([], project["project"]["dependencies"])
@@ -812,7 +825,7 @@ class RofiProtocolTest(unittest.TestCase):
             self.assertNotIn("\x00keep-filter\x1ftrue", rendered)
             self.assertNotIn("\x00keep-selection\x1ftrue", rendered)
 
-    def test_tab_cycles_from_nested_and_wraps_in_both_directions(self) -> None:
+    def test_legacy_tab_callbacks_still_cycle_from_nested_and_wrap(self) -> None:
         store = mock.Mock(spec=CacheStore)
         store.load.return_value = {"sessions": [session()], "errors": []}
         for retv, state, expected in (
