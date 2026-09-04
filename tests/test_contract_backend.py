@@ -27,6 +27,7 @@ from rofi_agent_plus.contract_backend import (
     _inventory_args,
     _run_bounded,
     _tmux_association,
+    _validate_active,
     parse_mesh,
     select_backend,
 )
@@ -597,8 +598,15 @@ class BackendSelectionAndTransportTest(unittest.TestCase):
             )
         active = json.loads(result.stdout)
         self.assertEqual({root_id}, set(active["active"]))
-        self.assertEqual(2, len(active["active"][root_id]))
+        root_candidates = active["active"][root_id]["candidates"]
+        self.assertEqual(2, len(root_candidates))
+        self.assertEqual({10, 13}, {candidate["pid"] for candidate in root_candidates})
         self.assertEqual({claude_id}, set(active["claudeActive"]))
+        validated = _validate_active(active)
+        self.assertEqual(active["nativeHostname"], validated["nativeHostname"])
+        self.assertEqual(active["active"], validated["active"])
+        self.assertEqual(active["claudeActive"], validated["claudeActive"])
+        self.assertEqual(active["opencodeActive"], validated["opencodeActive"])
         self.assertNotIn("tmux", _ACTIVE_PROBE)
 
 

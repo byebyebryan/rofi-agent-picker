@@ -568,7 +568,7 @@ def open_id(arguments):
   if value.startswith("--session=") and opencode_re.fullmatch(value.partition("=")[2]): return value.partition("=")[2]
  return None
 def put(dst,ident,pid):
- if ident: dst.setdefault(ident,[]).append({"pid":pid,"ancestors":ancestry(pid)})
+ if ident: dst.setdefault(ident,{"candidates":[]})["candidates"].append({"pid":pid,"ancestors":ancestry(pid)})
 codex={}; claude={}; opencode={}
 for pid,command in rows:
  a=args(pid)
