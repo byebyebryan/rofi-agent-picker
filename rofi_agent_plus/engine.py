@@ -27,7 +27,7 @@ DEFAULT_TIMEOUT = 4.0
 DEFAULT_SSH_CONNECT_TIMEOUT = 2
 DEFAULT_SSH_CONNECTION_ATTEMPTS = 1
 SESSION_ATTACH_TIMEOUT_SECONDS = 60
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 UUID_PATTERN = re.compile(
     r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
@@ -726,7 +726,7 @@ from pathlib import Path
 uuid_pattern = re.compile(r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})")
 proc_root = Path(
     os.environ.get(
-        "ROFI_AGENT_PICKER_PROC_ROOT",
+        "ROFI_AGENT_PLUS_PROC_ROOT",
         os.environ.get("DMS_AGENT_PICKER_PROC_ROOT", "/proc"),
     )
 )
@@ -1340,7 +1340,7 @@ def _tmux_client_wait_script() -> str:
         '"#{session_attached}" 2>/dev/null || true); '
         'case "$attached" in ""|0) '
         'if [ "$(date +%s)" -ge "$deadline" ]; then '
-        'printf "%s\\n" "rofi-agent-picker: terminal did not attach in time" >&2; '
+        'printf "%s\\n" "rofi-agent-plus: terminal did not attach in time" >&2; '
         'tmux kill-session -t "=$session" 2>/dev/null || true; exit 1; fi; '
         "sleep 0.05 ;; *) break ;; esac; done; "
         'tmux set-option -t "=$session" @agent_picker_waiting 0; '
@@ -1933,7 +1933,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         launch_attach(target, session, args.terminal, ssh_policy, detach=args.detach)
         return 0
     except PickerError as exc:
-        print(f"rofi-agent-picker: {exc}", file=sys.stderr)
+        print(f"rofi-agent-plus: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130

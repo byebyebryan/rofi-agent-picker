@@ -1,4 +1,4 @@
-"""Codex app-server transport for the Agent Picker."""
+"""Codex app-server transport for Agent Plus."""
 
 from __future__ import annotations
 
@@ -47,8 +47,8 @@ class AppServerClient:
             "initialize",
             {
                 "clientInfo": {
-                    "name": "rofi-agent-picker",
-                    "title": "Rofi Agent Picker",
+                    "name": "rofi-agent-plus",
+                    "title": "Rofi Agent Plus",
                     "version": self.version,
                 }
             },

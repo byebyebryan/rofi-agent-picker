@@ -1,4 +1,4 @@
-"""Strict configuration loading for the Rofi Agent Picker.
+"""Strict configuration loading for the Rofi Agent Plus.
 
 The DMS plugin historically stored these values as loosely typed plugin
 settings.  The standalone picker uses TOML so configuration errors can be
@@ -36,7 +36,7 @@ MIN_SSH_CONNECT_TIMEOUT = 1
 MAX_SSH_CONNECT_TIMEOUT = 30
 MIN_SSH_CONNECTION_ATTEMPTS = 1
 MAX_SSH_CONNECTION_ATTEMPTS = 5
-CONFIG_RELATIVE_PATH = Path("rofi-agent-picker") / "config.toml"
+CONFIG_RELATIVE_PATH = Path("rofi-agent-plus") / "config.toml"
 CONFIG_KEYS = frozenset(
     {
         "host_routes",

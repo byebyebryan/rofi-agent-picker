@@ -1,4 +1,4 @@
-"""Standalone Rofi agent-session picker."""
+"""Standalone Rofi Agent Plus package."""
 
 from .app import build_parser, diagnostic_main, main
 from .cache import CacheStore

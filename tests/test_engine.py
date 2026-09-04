@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from rofi_agent_picker import engine as picker
+from rofi_agent_plus import engine as picker
 
 THREAD_A = "00000000-0000-0000-0000-000000000001"
 THREAD_B = "00000000-0000-0000-0000-000000000002"

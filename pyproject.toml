@@ -3,8 +3,8 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rofi-agent-picker"
-version = "0.1.0"
+name = "rofi-agent-plus"
+version = "0.2.0"
 description = "Standalone Rofi picker for Codex, Claude Code, and OpenCode sessions"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,13 +15,13 @@ dependencies = []
 dev = ["ruff==0.16.3"]
 
 [project.scripts]
-rofi-agent-picker = "rofi_agent_picker.app:main"
+rofi-agent-plus = "rofi_agent_plus.app:main"
 
 [tool.setuptools.packages.find]
-include = ["rofi_agent_picker*"]
+include = ["rofi_agent_plus*"]
 
 [tool.setuptools.package-data]
-rofi_agent_picker = ["assets/providers/*.svg"]
+rofi_agent_plus = ["assets/providers/*.svg"]
 
 [tool.ruff]
 target-version = "py311"

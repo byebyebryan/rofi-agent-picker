@@ -158,7 +158,7 @@ def diagnostic_main(argv: Sequence[str] | None = None) -> int:
     except (ConfigError, engine.PickerError) as exc:
         if refresh_store is not None and args.background:
             refresh_store.clear_background_marker()
-        print(f"rofi-agent-picker: {exc}", file=sys.stderr)
+        print(f"rofi-agent-plus: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130

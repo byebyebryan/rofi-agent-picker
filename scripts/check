@@ -8,7 +8,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 ruff check .
 ruff format --check .
 
-test -x bin/rofi-agent-picker
+test -x bin/rofi-agent-plus
 test -x scripts/check
 test -f README.md
 test -f LICENSE
@@ -45,6 +45,10 @@ paths = subprocess.run(
 problems: list[str] = []
 for name in paths:
     path = Path(name)
+    if not path.exists():
+        # A tracked path removed by an unstaged rename is not part of the
+        # candidate working tree; the replacement path is listed separately.
+        continue
     try:
         data = path.read_bytes()
     except OSError as exc:

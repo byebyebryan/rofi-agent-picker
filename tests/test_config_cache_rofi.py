@@ -13,10 +13,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from rofi_agent_picker import VERSION, app, engine
-from rofi_agent_picker.cache import CACHE_VERSION, CacheStore, build_snapshot
-from rofi_agent_picker.config import ConfigError, PickerConfig, config_from_mapping, load_config
-from rofi_agent_picker.rofi import (
+from rofi_agent_plus import VERSION, app, engine
+from rofi_agent_plus.cache import CACHE_VERSION, CacheStore, build_snapshot
+from rofi_agent_plus.config import ConfigError, PickerConfig, config_from_mapping, load_config
+from rofi_agent_plus.rofi import (
     AUTO_REFRESH_DATA_PREFIX,
     ERROR_NOTICE_DATA_PREFIX,
     ERROR_NOTICE_SECONDS,
@@ -206,7 +206,7 @@ class ProjectMetadataTest(unittest.TestCase):
         project = tomllib.loads((self.root / "pyproject.toml").read_text())
         self.assertEqual(engine.VERSION, project["project"]["version"])
         self.assertEqual(VERSION, engine.VERSION)
-        self.assertEqual("0.1.0", engine.VERSION)
+        self.assertEqual("0.2.0", engine.VERSION)
         self.assertIn(f"Version `{engine.VERSION}`", (self.root / "README.md").read_text())
 
     def test_ci_and_readme_describe_the_canonical_deployment_contract(self) -> None:
@@ -215,7 +215,7 @@ class ProjectMetadataTest(unittest.TestCase):
         self.assertIn("config.toml", readme)
         self.assertIn("XDG_CACHE_HOME", readme)
         self.assertIn("Rofi script-mode", readme)
-        self.assertIn("canonical implementation of the deployed Agent Picker", readme)
+        self.assertIn("canonical implementation of Agent Plus", readme)
         self.assertIn("Current refresh/provider errors are shown for about three seconds", readme)
         self.assertIn("./scripts/check", workflow)
 
@@ -338,7 +338,7 @@ class CacheTest(unittest.TestCase):
         }
         with (
             mock.patch.dict(os.environ, {**callback_environment, "PICKER_TEST_VALUE": "kept"}),
-            mock.patch("rofi_agent_picker.cache.subprocess.Popen") as popen,
+            mock.patch("rofi_agent_plus.cache.subprocess.Popen") as popen,
         ):
             self.assertTrue(self.store.spawn_background(command))
             self.assertFalse(self.store.spawn_background(command))
@@ -379,14 +379,12 @@ class RofiProtocolTest(unittest.TestCase):
     def test_background_command_supports_checkout_and_installed_layouts(self) -> None:
         checkout = _background_command()
         self.assertEqual(sys.executable, checkout[0])
-        self.assertTrue(checkout[1].endswith("/bin/rofi-agent-picker"))
+        self.assertTrue(checkout[1].endswith("/bin/rofi-agent-plus"))
         self.assertEqual(["refresh", "--background"], checkout[2:])
 
-        with mock.patch(
-            "rofi_agent_picker.rofi.__file__", "/opt/venv/lib/rofi_agent_picker/rofi.py"
-        ):
+        with mock.patch("rofi_agent_plus.rofi.__file__", "/opt/venv/lib/rofi_agent_plus/rofi.py"):
             self.assertEqual(
-                [sys.executable, "-m", "rofi_agent_picker", "refresh", "--background"],
+                [sys.executable, "-m", "rofi_agent_plus", "refresh", "--background"],
                 _background_command(),
             )
 
@@ -471,11 +469,11 @@ class RofiProtocolTest(unittest.TestCase):
     def test_provider_icon_assets_are_declared_as_package_data(self) -> None:
         root = Path(__file__).resolve().parents[1]
         project = tomllib.loads((root / "pyproject.toml").read_text())
-        package_data = project["tool"]["setuptools"]["package-data"]["rofi_agent_picker"]
+        package_data = project["tool"]["setuptools"]["package-data"]["rofi_agent_plus"]
         self.assertIn("assets/providers/*.svg", package_data)
         self.assertEqual(
             {"claude.svg", "codex.svg", "generic.svg", "opencode.svg"},
-            {path.name for path in (root / "rofi_agent_picker/assets/providers").glob("*.svg")},
+            {path.name for path in (root / "rofi_agent_plus/assets/providers").glob("*.svg")},
         )
 
     def test_empty_snapshot_has_nonselectable_status_row(self) -> None:
@@ -594,8 +592,8 @@ class RofiProtocolTest(unittest.TestCase):
         data = _refresh_data(None, 999, "old config error", navigation=navigation)
         output = io.StringIO()
         with (
-            mock.patch("rofi_agent_picker.rofi.load_config", side_effect=ConfigError("config")),
-            mock.patch("rofi_agent_picker.rofi.time.time", return_value=1000),
+            mock.patch("rofi_agent_plus.rofi.load_config", side_effect=ConfigError("config")),
+            mock.patch("rofi_agent_plus.rofi.time.time", return_value=1000),
             mock.patch("sys.stdout", output),
         ):
             run_rofi(
@@ -617,9 +615,9 @@ class RofiProtocolTest(unittest.TestCase):
         output = io.StringIO()
         with (
             mock.patch(
-                "rofi_agent_picker.rofi.load_config", side_effect=ConfigError("config offline")
+                "rofi_agent_plus.rofi.load_config", side_effect=ConfigError("config offline")
             ),
-            mock.patch("rofi_agent_picker.rofi.time.time", return_value=1000),
+            mock.patch("rofi_agent_plus.rofi.time.time", return_value=1000),
             mock.patch("sys.stdout", output),
         ):
             run_rofi(
@@ -645,7 +643,7 @@ class RofiProtocolTest(unittest.TestCase):
             output = io.StringIO()
             with (
                 mock.patch("sys.stdout", output),
-                mock.patch("rofi_agent_picker.rofi.time.time", return_value=1000),
+                mock.patch("rofi_agent_plus.rofi.time.time", return_value=1000),
             ):
                 run_rofi(
                     {
@@ -747,12 +745,12 @@ class RofiProtocolTest(unittest.TestCase):
         store.load.return_value = snapshot
         data = _refresh_data(1010, 1003, "old notice", navigation=nested)
         with mock.patch(
-            "rofi_agent_picker.rofi._open_selection", side_effect=engine.PickerError("gone")
+            "rofi_agent_plus.rofi._open_selection", side_effect=engine.PickerError("gone")
         ):
             output = io.StringIO()
             with (
                 mock.patch("sys.stdout", output),
-                mock.patch("rofi_agent_picker.rofi.time.time", return_value=1000),
+                mock.patch("rofi_agent_plus.rofi.time.time", return_value=1000),
             ):
                 run_rofi(
                     {
@@ -809,7 +807,7 @@ class RofiProtocolTest(unittest.TestCase):
             output = io.StringIO()
             with (
                 mock.patch("sys.stdout", output),
-                mock.patch("rofi_agent_picker.rofi.time.time", return_value=1000),
+                mock.patch("rofi_agent_plus.rofi.time.time", return_value=1000),
             ):
                 run_rofi(
                     {
@@ -855,7 +853,7 @@ class RofiProtocolTest(unittest.TestCase):
         output = io.StringIO()
         with (
             mock.patch("sys.stdout", output),
-            mock.patch("rofi_agent_picker.rofi.time.time", return_value=1000),
+            mock.patch("rofi_agent_plus.rofi.time.time", return_value=1000),
         ):
             result = run_rofi(
                 {
@@ -891,7 +889,7 @@ class RofiProtocolTest(unittest.TestCase):
         with (
             mock.patch("sys.stdout", output),
             mock.patch(
-                "rofi_agent_picker.rofi.load_config", side_effect=ConfigError("invalid config")
+                "rofi_agent_plus.rofi.load_config", side_effect=ConfigError("invalid config")
             ),
         ):
             result = run_rofi(
@@ -941,7 +939,7 @@ class RofiProtocolTest(unittest.TestCase):
         self.assertIn("\x00prompt\x1fAgents › Hosts", output.getvalue())
         self.assertNotIn("\x00keep-filter\x1ftrue", output.getvalue())
 
-        with mock.patch("rofi_agent_picker.rofi._open_selection") as opener:
+        with mock.patch("rofi_agent_plus.rofi._open_selection") as opener:
             self.assertEqual(
                 0,
                 run_rofi(
@@ -981,7 +979,7 @@ class RofiProtocolTest(unittest.TestCase):
         self.assertIn("\x00data\x1fnavigation:", rendered)
 
         with mock.patch(
-            "rofi_agent_picker.rofi._open_selection", side_effect=engine.PickerError("gone")
+            "rofi_agent_plus.rofi._open_selection", side_effect=engine.PickerError("gone")
         ):
             output = io.StringIO()
             with mock.patch("sys.stdout", output):
@@ -1131,7 +1129,7 @@ class RofiProtocolTest(unittest.TestCase):
         output = io.StringIO()
         with (
             mock.patch("sys.stdout", output),
-            mock.patch("rofi_agent_picker.rofi.time.time", return_value=1000),
+            mock.patch("rofi_agent_plus.rofi.time.time", return_value=1000),
         ):
             result = run_rofi(environ, store=store, config=self._config())
         self.assertEqual(0, result)
@@ -1152,7 +1150,7 @@ class RofiProtocolTest(unittest.TestCase):
         output = io.StringIO()
         with (
             mock.patch("sys.stdout", output),
-            mock.patch("rofi_agent_picker.rofi.time.time", return_value=1003),
+            mock.patch("rofi_agent_plus.rofi.time.time", return_value=1003),
         ):
             result = run_rofi(
                 {"ROFI_RETV": str(ROFI_RETV_CUSTOM_19), "ROFI_DATA": continuation_data},
@@ -1358,7 +1356,7 @@ class RofiProtocolTest(unittest.TestCase):
         selected = session()
         store = mock.Mock(spec=CacheStore)
         store.load.return_value = {"sessions": [selected], "errors": []}
-        with mock.patch("rofi_agent_picker.rofi._open_selection") as opener:
+        with mock.patch("rofi_agent_plus.rofi._open_selection") as opener:
             self.assertEqual(
                 0,
                 run_rofi(
@@ -1431,7 +1429,7 @@ class RofiProtocolTest(unittest.TestCase):
                     mock.patch.object(engine, "focus_existing_window", return_value=False),
                     mock.patch.object(engine, "launch_attach") as launch,
                 ):
-                    from rofi_agent_picker.rofi import _open_selection
+                    from rofi_agent_plus.rofi import _open_selection
 
                     _open_selection(selected, PickerConfig())
                 opener.assert_called_once()
@@ -1447,7 +1445,7 @@ class EntrypointTest(unittest.TestCase):
     def test_rofi_selection_argv_is_not_parsed_as_a_diagnostic_command(self) -> None:
         with (
             mock.patch.dict(os.environ, {"ROFI_RETV": "1"}, clear=False),
-            mock.patch("rofi_agent_picker.app.run_rofi", return_value=0) as rofi_mode,
+            mock.patch("rofi_agent_plus.app.run_rofi", return_value=0) as rofi_mode,
         ):
             self.assertEqual(0, app.main(["visible row text"]))
         rofi_mode.assert_called_once()
@@ -1456,7 +1454,7 @@ class EntrypointTest(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
         direct = subprocess.run(
-            [str(root / "bin" / "rofi-agent-picker"), "--help"],
+            [str(root / "bin" / "rofi-agent-plus"), "--help"],
             capture_output=True,
             text=True,
             check=False,
@@ -1466,7 +1464,7 @@ class EntrypointTest(unittest.TestCase):
         self.assertIn("open-opencode", direct.stdout)
         with tempfile.TemporaryDirectory() as temporary:
             link = Path(temporary) / "picker"
-            link.symlink_to(root / "bin" / "rofi-agent-picker")
+            link.symlink_to(root / "bin" / "rofi-agent-plus")
             linked = subprocess.run(
                 [str(link), "--help"],
                 capture_output=True,

@@ -1,11 +1,18 @@
-# Rofi Agent Picker
+# Rofi Agent Plus
 
-`rofi-agent-picker` is a standalone Rofi script-mode picker for Codex CLI,
+`rofi-agent-plus` is a standalone Rofi script-mode picker for Codex CLI,
 Claude Code, and OpenCode sessions.  It ports the discovery and tmux-opening
 engine from DMS Agent Picker while keeping Rofi responsible for the searchable
 presentation and navigation.
 
-Version `0.1.0` supports Python 3.11+ and has no runtime package dependencies.
+The repository, executable, Python package, Rofi mode, configuration, and cache
+use the `rofi-agent-plus` name. The proposed, not-yet-implemented
+[picker-suite integration](docs/SUITE_INTEGRATION.md) makes `rofi-ssh-plus`
+authoritative for logical hosts and routes and makes `rofi-tmux-plus`
+authoritative for generic tmux inventory and lifecycle. This project retains
+provider-native discovery and resume policy.
+
+Version `0.2.0` supports Python 3.11+ and has no runtime package dependencies.
 The current core contract requires Python 3, the Codex CLI, SSH, tmux, and a
 terminal with `-e` support.  Claude Code and OpenCode are optional provider
 tools: their sessions are included only on hosts where the corresponding
@@ -17,8 +24,8 @@ tools they expose, but do not need this repository installed.
 The executable can be run directly from a checkout:
 
 ```sh
-./bin/rofi-agent-picker list | jq
-rofi -show agent -modes "agent:$(pwd)/bin/rofi-agent-picker" \
+./bin/rofi-agent-plus list | jq
+rofi -show agent-plus -modes "agent-plus:$(pwd)/bin/rofi-agent-plus" \
   -kb-custom-1 Alt+r -kb-custom-2 Right -kb-custom-3 Left \
   -kb-custom-6 Escape \
   -kb-cancel Control+g \
@@ -26,8 +33,9 @@ rofi -show agent -modes "agent:$(pwd)/bin/rofi-agent-picker" \
   -eh 2
 ```
 
-The normal Rofi invocation is configured as a script mode.  `Mod+A` or a
-similar Niri binding can invoke it with `rofi -show agent`.  The picker opens
+The normal Rofi invocation is configured as the `agent-plus` script mode.
+`Mod+A` or a similar Niri binding can invoke it with `rofi -show agent-plus`.
+The picker opens
 in `Agents › Recent`, a mixed newest-first list.  Left and Right cycle the
 top-level `Recent`, `Hosts`, and `Providers` views; `Enter` enters a
 host/provider group or opens a session.  `Escape` returns to a view root when
@@ -62,8 +70,8 @@ detached.  Icon provenance and trademark notes are in [`ASSETS.md`](ASSETS.md).
 ## Configuration
 
 Configuration is optional and lives at
-`$XDG_CONFIG_HOME/rofi-agent-picker/config.toml`, or
-`~/.config/rofi-agent-picker/config.toml`.  The accepted keys and an example
+`$XDG_CONFIG_HOME/rofi-agent-plus/config.toml`, or
+`~/.config/rofi-agent-plus/config.toml`.  The accepted keys and an example
 are in [`examples/config.toml`](examples/config.toml):
 
 ```toml
@@ -87,7 +95,7 @@ override the file for side-by-side testing.
 ## Cache visibility
 
 The picker stores a private, versioned snapshot under
-`$XDG_CACHE_HOME/rofi-agent-picker/`, or `~/.cache/rofi-agent-picker/`.  The
+`$XDG_CACHE_HOME/rofi-agent-plus/`, or `~/.cache/rofi-agent-plus/`.  The
 directory is mode 0700 and cache/lock files are mode 0600.  Writes use a
 temporary file, fsync, and atomic replacement.  The snapshot fingerprint
 includes host routes, hosts, aliases, session limit, and SSH policy, so a
@@ -112,13 +120,13 @@ There is intentionally no resident process or push-update channel.
 The same executable has a JSON CLI when called without `ROFI_RETV`:
 
 ```sh
-./bin/rofi-agent-picker list --limit 40
-./bin/rofi-agent-picker list --route 'workstation=workstation-vpn.example|workstation.example' --stream
-./bin/rofi-agent-picker active
-./bin/rofi-agent-picker open --host local --id UUID --name project --cwd "$PWD" --detach
-./bin/rofi-agent-picker open-claude --host local --id UUID --detach
-./bin/rofi-agent-picker open-opencode --host local --id ses_... --detach
-./bin/rofi-agent-picker refresh
+./bin/rofi-agent-plus list --limit 40
+./bin/rofi-agent-plus list --route 'workstation=workstation-vpn.example|workstation.example' --stream
+./bin/rofi-agent-plus active
+./bin/rofi-agent-plus open --host local --id UUID --name project --cwd "$PWD" --detach
+./bin/rofi-agent-plus open-claude --host local --id UUID --detach
+./bin/rofi-agent-plus open-opencode --host local --id ses_... --detach
+./bin/rofi-agent-plus refresh
 ```
 
 The provider engine preserves DMS-created tmux option names and opening
@@ -129,10 +137,12 @@ the root-only `parent_id IS NULL` filter and all-project scope.
 
 ## Deployment and ownership
 
-This repository is the canonical implementation of the deployed Agent Picker.
-Chezmoi pins the release archive and owns the Rofi mode, its host configuration,
-and the Niri binding.  DMS remains responsible for the bar, notifications,
-idle handling, lock screen, polkit, and the general Spotlight launcher.
+This repository is the canonical implementation of Agent Plus. A later,
+coordinated deployment will move Chezmoi's release pin, Rofi mode, host
+configuration, and Niri binding to the new name. Until then, the existing live
+Agent Picker deployment remains unchanged. DMS remains responsible for the
+bar, notifications, idle handling, lock screen, polkit, and the general
+Spotlight launcher.
 
 The former DMS Agent Picker repository is retained for compatibility and
 history, but is deprecated; new picker behavior belongs here.  Project

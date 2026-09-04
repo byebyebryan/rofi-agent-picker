@@ -18,7 +18,7 @@ from . import engine
 from .config import PickerConfig
 
 CACHE_VERSION = 1
-DEFAULT_CACHE_DIR = Path("rofi-agent-picker")
+DEFAULT_CACHE_DIR = Path("rofi-agent-plus")
 SNAPSHOT_NAME = "snapshot.json"
 LOCK_NAME = "refresh.lock"
 BACKGROUND_MARKER_NAME = "refresh.background"
@@ -323,7 +323,7 @@ class CacheStore:
                     return current
                 if previous is not None:
                     return previous
-                raise engine.PickerError("agent picker refresh is already in progress")
+                raise engine.PickerError("Agent Plus refresh is already in progress")
             time.sleep(0.05)
 
     def spawn_background(self, command: list[str]) -> bool:

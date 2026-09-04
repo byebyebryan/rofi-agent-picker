@@ -1,4 +1,4 @@
-"""Rofi script-mode adapter for the standalone agent picker."""
+"""Rofi script-mode adapter for Agent Plus."""
 
 from __future__ import annotations
 
@@ -998,10 +998,10 @@ def _open_selection(
 
 
 def _background_command() -> list[str]:
-    entrypoint = Path(__file__).resolve().parents[1] / "bin" / "rofi-agent-picker"
+    entrypoint = Path(__file__).resolve().parents[1] / "bin" / "rofi-agent-plus"
     if entrypoint.is_file():
         return [sys.executable, str(entrypoint), "refresh", "--background"]
-    return [sys.executable, "-m", "rofi_agent_picker", "refresh", "--background"]
+    return [sys.executable, "-m", "rofi_agent_plus", "refresh", "--background"]
 
 
 def _message_for_cache(
