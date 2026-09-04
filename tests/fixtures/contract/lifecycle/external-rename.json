@@ -1,0 +1,5 @@
+{
+  "scenario": "open permits a benign external rename while mutations do not",
+  "open": {"schemaVersion": 1, "ok": true, "meshRevision": null, "session": {"hostId": "local", "serverGeneration": "tmux-v1:1722741000:1234:/run/user/1000/tmux-1000/default", "sessionId": "$0", "createdAt": 1722742000, "name": "renamed-outside", "activityAt": 1722742001, "lastAttachedAt": null, "attachedClients": 0, "pending": false, "windowCount": 1, "sessionPath": "/home/user", "currentWindow": "shell", "currentPath": "/home/user"}, "focused": false, "terminalLaunched": true},
+  "rename": {"schemaVersion": 1, "ok": false, "error": {"code": "stale_session", "message": "the selected tmux session changed; refresh and try again", "hostId": "local"}}
+}

@@ -63,6 +63,9 @@ class HostTarget:
 class SshPolicy:
     connect_timeout: int = DEFAULT_SSH_CONNECT_TIMEOUT
     connection_attempts: int = DEFAULT_SSH_CONNECTION_ATTEMPTS
+    # Contract mode receives the executable from Host Mesh.  Keeping the
+    # default preserves every legacy call site and its existing argv shape.
+    executable: str = "ssh"
 
 
 DEFAULT_SSH_POLICY = SshPolicy()
@@ -140,7 +143,7 @@ def parse_host_target(value: str) -> HostTarget:
 
 def _ssh_prefix(policy: SshPolicy) -> list[str]:
     return [
-        "ssh",
+        policy.executable,
         "-o",
         "BatchMode=yes",
         "-o",

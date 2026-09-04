@@ -1,0 +1,5 @@
+{
+  "scenario": "post-create setup failure cleans only the token-matching stable reference",
+  "response": {"schemaVersion": 1, "ok": false, "error": {"code": "operation_failed", "message": "could not set requested session metadata", "hostId": "local"}},
+  "assertions": {"sessionRemoved": true, "requiresOperationToken": true, "requiresServerGeneration": true, "requiresCreatedAt": true}
+}

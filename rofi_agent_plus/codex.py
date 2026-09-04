@@ -20,13 +20,23 @@ class AppServerClient:
         timeout: float,
         version: str,
         error: Callable[[str], Exception],
+        *,
+        stdout_limit: int | None = None,
+        stderr_limit: int | None = None,
+        reached_marker: bytes | None = None,
     ) -> None:
         self.timeout = timeout
         self.version = version
         self._error = error
         self._next_id = 1
         self._buffer = b""
+        self._stdout_seen = 0
         self._stderr = bytearray()
+        self._stdout_limit = stdout_limit
+        self._stderr_limit = stderr_limit
+        self._reached_marker = reached_marker
+        self._marker_verified = reached_marker is None
+        self._marker_diagnostic = ""
         self.process = subprocess.Popen(
             list(command),
             stdin=subprocess.PIPE,
@@ -103,25 +113,80 @@ class AppServerClient:
                 raise self._error(self._process_error("Codex app-server timed out"))
 
             for key, _ in events:
-                stream = key.fileobj
-                file_descriptor = stream if isinstance(stream, int) else stream.fileno()
-                chunk = os.read(file_descriptor, 65536)
-                if not chunk:
-                    try:
-                        self._selector.unregister(stream)
-                    except KeyError:
-                        pass
-                    if key.data == "stdout":
-                        raise self._error(self._process_error("Codex app-server closed stdout"))
-                    continue
-                if key.data == "stdout":
-                    self._buffer += chunk
-                else:
-                    self._stderr.extend(chunk)
+                closed_stdout = self._drain_event(key)
+                if closed_stdout:
+                    raise self._error(self._process_error("Codex app-server closed stdout"))
 
     def _process_error(self, prefix: str) -> str:
         stderr = self._stderr.decode(errors="replace").strip()
         return f"{prefix}: {stderr}" if stderr else prefix
+
+    def marker_result(self) -> tuple[bool, str]:
+        """Return an exact reached-marker verdict without trusting text alike.
+
+        The marker is emitted before the remote ``codex app-server`` exec;
+        callers inspect this immediately after ``initialize``.  Legacy
+        clients pass no marker and retain their historical behavior.
+        """
+
+        if self._reached_marker is None or self._marker_verified:
+            return True, self._marker_diagnostic or self._stderr.decode("utf-8", "replace")
+        count = bytes(self._stderr).count(self._reached_marker)
+        diagnostic = bytes(self._stderr).replace(self._reached_marker, b"", 1)
+        return count == 1, diagnostic.decode("utf-8", "replace")
+
+    def _drain_event(self, key: selectors.SelectorKey) -> bool:
+        """Drain one ready pipe, returning whether stdout reached EOF."""
+
+        stream = key.fileobj
+        file_descriptor = stream if isinstance(stream, int) else stream.fileno()
+        chunk = os.read(file_descriptor, 65536)
+        if not chunk:
+            try:
+                self._selector.unregister(stream)
+            except KeyError:
+                pass
+            return key.data == "stdout"
+        if key.data == "stdout":
+            self._buffer += chunk
+            self._stdout_seen += len(chunk)
+            if self._stdout_limit is not None and self._stdout_seen > self._stdout_limit:
+                raise self._error("Codex app-server exceeded stdout limit")
+        else:
+            self._stderr.extend(chunk)
+            if self._stderr_limit is not None and len(self._stderr) > self._stderr_limit:
+                raise self._error("Codex app-server exceeded stderr limit")
+        return False
+
+    def wait_for_marker(self, timeout: float) -> tuple[bool, str]:
+        """Boundedly await exactly one reached marker before any JSON-RPC.
+
+        stdout is drained into the regular bounded JSON-RPC buffer while the
+        marker arrives on stderr.  This handles the normal scheduler race in
+        which SSH makes stdout readable before forwarding the marker pipe.
+        """
+
+        if self._reached_marker is None:
+            return True, ""
+        deadline = time.monotonic() + timeout
+        while True:
+            marker = self._reached_marker
+            count = bytes(self._stderr).count(marker)
+            if count == 1:
+                diagnostic = bytes(self._stderr).replace(marker, b"", 1)
+                self._marker_verified = True
+                self._marker_diagnostic = diagnostic.decode("utf-8", "replace")
+                return True, self._marker_diagnostic
+            if count > 1:
+                return False, bytes(self._stderr).decode("utf-8", "replace")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False, bytes(self._stderr).decode("utf-8", "replace")
+            events = self._selector.select(remaining)
+            if not events:
+                return False, bytes(self._stderr).decode("utf-8", "replace")
+            for key, _ in events:
+                self._drain_event(key)
 
     def close(self) -> None:
         try:
@@ -137,6 +202,12 @@ class AppServerClient:
                 self.process.wait(timeout=0.5)
         finally:
             self._selector.close()
+            for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
+                if stream is not None and not stream.closed:
+                    try:
+                        stream.close()
+                    except BrokenPipeError:
+                        pass
 
     def __enter__(self) -> Self:
         return self

@@ -6,11 +6,15 @@ engine from DMS Agent Picker while keeping Rofi responsible for the searchable
 presentation and navigation.
 
 The repository, executable, Python package, Rofi mode, configuration, and cache
-use the `rofi-agent-plus` name. The proposed, not-yet-implemented
-[picker-suite integration](docs/SUITE_INTEGRATION.md) makes `rofi-ssh-plus`
-authoritative for logical hosts and routes and makes `rofi-tmux-plus`
-authoritative for generic tmux inventory and lifecycle. This project retains
-provider-native discovery and resume policy.
+use the `rofi-agent-plus` name. When both public companion executables are on
+`PATH`, the implemented discovery backend consumes Host Mesh v1 from
+`rofi-ssh-plus` and live generic tmux inventory from `rofi-tmux-plus`; it
+keeps provider-native discovery, correlation, and its private cache here. If
+either companion is absent, the complete legacy backend remains the rollback
+path. In contract mode, Agent Plus revalidates a typed provider row and calls
+the public Tmux Session v1 `open` or `create` command; it never guesses an SSH
+route, Niri window, terminal argv, or raw tmux target. Rename and kill remain
+Tmux Plus management actions, not Agent Plus actions.
 
 Version `0.2.0` supports Python 3.11+ and has no runtime package dependencies.
 The current core contract requires Python 3, the Codex CLI, SSH, tmux, and a
@@ -63,9 +67,10 @@ names and aliases remain in the row's filter text and invisible Rofi metadata,
 so searching for `codex`, `claude`, `Claude Code`, or `opencode` still works.
 The complete session identity is carried in Rofi's `info` metadata, not parsed
 from visible text.  Active rows are marked with Rofi's active-row metadata.  A
-successful selection focuses an existing Niri terminal when possible or
-resumes/creates the compatible DMS tmux session and launches the terminal
-detached.  Icon provenance and trademark notes are in [`ASSETS.md`](ASSETS.md).
+successful legacy selection preserves the established focus/resume/create
+path. A contract selection instead uses Tmux Plus to focus or launch the
+terminal, or to create a deferred provider-resume wrapper with typed provider
+options. Icon provenance and trademark notes are in [`ASSETS.md`](ASSETS.md).
 
 ## Configuration
 
@@ -98,8 +103,11 @@ The picker stores a private, versioned snapshot under
 `$XDG_CACHE_HOME/rofi-agent-plus/`, or `~/.cache/rofi-agent-plus/`.  The
 directory is mode 0700 and cache/lock files are mode 0600.  Writes use a
 temporary file, fsync, and atomic replacement.  The snapshot fingerprint
-includes host routes, hosts, aliases, session limit, and SSH policy, so a
-discovery-affecting configuration change causes a synchronous refresh.
+includes host routes, hosts, aliases, session limit, and SSH policy. Contract
+snapshots also carry backend identity and the exact Host Mesh revision, so a
+legacy or older-Mesh result is never rendered as current contract data. A
+discovery-affecting configuration or authority change causes a synchronous
+refresh.
 
 On a cache miss, the first invocation refreshes synchronously.  A fresh cache
 renders immediately.  A stale cache renders immediately with a short
@@ -113,6 +121,8 @@ then cleared automatically; the rows remain available throughout.  The new
 result is also visible the next time the picker opens or after `Alt+R`.
 Per-host snapshots and rows from failed provider stages are retained while a
 host is unavailable, and current errors are summarized in the message area.
+The detached-refresh marker is scoped to the cache fingerprint and backend
+authority; an old owner cannot suppress or overwrite a newer Mesh refresh.
 There is intentionally no resident process or push-update channel.
 
 ## Diagnostic CLI
@@ -129,7 +139,7 @@ The same executable has a JSON CLI when called without `ROFI_RETV`:
 ./bin/rofi-agent-plus refresh
 ```
 
-The provider engine preserves DMS-created tmux option names and opening
+The legacy provider engine preserves DMS-created tmux option names and opening
 behavior, including Codex `@codex_thread_id`, Claude
 `@claude_session_id`, OpenCode `@opencode_session_id`, waiting-session reuse,
 Niri window focus, and remote SSH attach behavior.  OpenCode discovery keeps

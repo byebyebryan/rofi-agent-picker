@@ -1,0 +1,4 @@
+{
+  "scenario": "explicit invalid creation directory",
+  "response": {"schemaVersion": 1, "ok": false, "error": {"code": "invalid_cwd", "message": "cwd must name an existing directory", "hostId": "local"}}
+}

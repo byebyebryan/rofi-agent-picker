@@ -15,6 +15,12 @@ test -f LICENSE
 test -f pyproject.toml
 test -f examples/config.toml
 test -f .github/workflows/ci.yml
+test -f rofi_agent_plus/contract_backend.py
+test -f rofi_agent_plus/contract_lifecycle.py
+test -f tests/test_contract_backend.py
+test -f tests/test_contract_lifecycle.py
+test -f tests/fixtures/contract/README.md
+test -f tests/fixtures/contract/lifecycle/README.md
 
 # Check this gate itself even before the initial commit, then inspect every
 # tracked or candidate-untracked shell file.  The latter is deliberately based

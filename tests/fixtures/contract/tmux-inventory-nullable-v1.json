@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": 1722743000001,
+  "meshRevision": "sha256:mesh-v1",
+  "hosts": [
+    {"hostId": "alpha", "display": "Alpha", "local": true, "status": "ok", "observedAt": 1722743000001, "nativeHostname": "alpha-native", "serverGeneration": "tmux-v1:alpha", "route": null, "sessions": [{"hostId": "alpha", "serverGeneration": "tmux-v1:alpha", "sessionId": "$4", "createdAt": 1722742004, "name": null, "activityAt": null, "lastAttachedAt": null, "attachedClients": null, "pending": false, "windowCount": null, "sessionPath": null, "currentWindow": null, "currentPath": null, "panes": [{"paneId": "%3", "pid": null, "currentPath": null, "currentCommand": null}], "options": {"@codex_thread_id": "11111111-1111-1111-1111-111111111111", "@codex_name": null, "@claude_session_id": null, "@claude_name": null, "@opencode_session_id": null, "@opencode_name": null, "@agent_picker_waiting": null}}], "error": null},
+    {"hostId": "beta", "display": "Beta", "local": false, "status": "ok", "observedAt": 1722743000001, "nativeHostname": "beta-native", "serverGeneration": null, "route": "beta-first.test", "sessions": [], "error": null}
+  ]
+}

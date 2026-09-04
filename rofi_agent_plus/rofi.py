@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import time
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from html import escape
@@ -19,8 +20,9 @@ from typing import Any
 from urllib.parse import quote, unquote
 
 from . import engine
-from .cache import CacheStore
+from .cache import CacheStore, PresentationContext
 from .config import ConfigError, PickerConfig, load_config
+from .contract_lifecycle import ContractLifecycle
 
 ROFI_RETV_SELECTED = 1
 ROFI_RETV_CUSTOM_1 = 10
@@ -70,6 +72,15 @@ def sanitize(value: object) -> str:
 
     text = str(value) if value is not None else ""
     return _CONTROL_CHARS.sub(" ", text).strip()
+
+
+def _contract_text(value: object, *, required: bool = True) -> bool:
+    return (
+        isinstance(value, str)
+        and (bool(value) or not required)
+        and len(value) <= 16 * 1024
+        and not any(unicodedata.category(char).startswith("C") for char in value)
+    )
 
 
 @dataclass(frozen=True)
@@ -478,6 +489,19 @@ def selection_payload(session: Mapping[str, Any]) -> str:
         )
         if key in session
     }
+    if session.get("contractMode") is True:
+        # Contract rows must carry their authority and subordinate stable tmux
+        # reference through Rofi.  Dropping this marker would let a callback
+        # silently reinterpret a logical host as legacy SSH input.
+        payload.update(
+            {
+                "contractMode": True,
+                "hostId": session.get("hostId"),
+                "backend": session.get("backend"),
+            }
+        )
+        if "tmux" in session:
+            payload["tmux"] = session["tmux"]
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -881,6 +905,37 @@ def _parse_selection(raw: str | None) -> dict[str, Any]:
             raise engine.PickerError("Rofi selection contains an invalid session id")
     elif not engine.OPENCODE_ID_PATTERN.fullmatch(identifier):
         raise engine.PickerError("Rofi selection contains an invalid session id")
+    if payload.get("contractMode") is True:
+        host_id = payload.get("hostId")
+        backend = payload.get("backend")
+        if (
+            not isinstance(host_id, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", host_id, re.ASCII)
+            or not isinstance(backend, Mapping)
+            or backend.get("kind") != "contract"
+            or backend.get("capability") != "host-mesh-v1+tmux-session-v1"
+            or not _contract_text(backend.get("meshRevision"))
+            or backend["meshRevision"].strip() != backend["meshRevision"]
+            or any(char.isspace() for char in backend["meshRevision"])
+        ):
+            raise engine.PickerError("Rofi contract selection metadata is incomplete")
+        tmux = payload.get("tmux")
+        if tmux is not None:
+            if (
+                not isinstance(tmux, Mapping)
+                or tmux.get("meshRevision") != backend["meshRevision"]
+                or not _contract_text(tmux.get("serverGeneration"))
+                or not isinstance(tmux.get("sessionId"), str)
+                or not re.fullmatch(r"\$[0-9]+", tmux["sessionId"], re.ASCII)
+                or isinstance(tmux.get("createdAt"), bool)
+                or not isinstance(tmux.get("createdAt"), int)
+                or tmux["createdAt"] < 0
+                or tmux.get("observedName") is not None
+                and not _contract_text(tmux.get("observedName"))
+            ):
+                raise engine.PickerError("Rofi contract tmux metadata is invalid")
+    elif "contractMode" in payload:
+        raise engine.PickerError("Rofi contract selection metadata is invalid")
     return payload
 
 
@@ -964,8 +1019,24 @@ def _cycled_root(navigation: NavigationState, direction: int) -> NavigationState
 def _open_selection(
     selection: Mapping[str, Any],
     config: PickerConfig,
-    timeout: float = engine.DEFAULT_TIMEOUT,
+    timeout: float | None = None,
+    *,
+    store: CacheStore | None = None,
+    context: PresentationContext | None = None,
 ) -> None:
+    if selection.get("contractMode") is True:
+        if store is None or context is None:
+            raise engine.PickerError("contract-backed open requires a prepared authority")
+        lifecycle = (
+            ContractLifecycle(store, config, context)
+            if timeout is None
+            else ContractLifecycle(store, config, context, timeout=timeout)
+        )
+        lifecycle.open_or_create(selection)
+        return
+    # Preserve the established legacy default while leaving ``None`` available
+    # to mean the contract lifecycle's independently bounded action budget.
+    timeout = engine.DEFAULT_TIMEOUT if timeout is None else timeout
     route_value = selection.get("route")
     host_value = route_value or selection.get("connectHost") or "local"
     if not isinstance(host_value, str):
@@ -1002,6 +1073,51 @@ def _background_command() -> list[str]:
     if entrypoint.is_file():
         return [sys.executable, str(entrypoint), "refresh", "--background"]
     return [sys.executable, "-m", "rofi_agent_plus", "refresh", "--background"]
+
+
+def _presentation_context(
+    store: CacheStore,
+    config: PickerConfig,
+) -> PresentationContext | None:
+    candidate = store.presentation_context(config)
+    return candidate if isinstance(candidate, PresentationContext) else None
+
+
+def _presentation_snapshot(
+    store: CacheStore,
+    config: PickerConfig,
+    context: PresentationContext | None = None,
+) -> Mapping[str, Any] | None:
+    """Read only the capability/revision selected for this invocation.
+
+    Production context always gates by capability and Mesh revision.  An
+    explicit invalid/mock context keeps the legacy test seam as a safe
+    non-production fallback instead of making class identity a security
+    boundary.
+    """
+
+    if context is not None:
+        return store.load_current(config, context)
+    return store.load(config.fingerprint)
+
+
+def _refresh_scope(
+    store: CacheStore,
+    config: PickerConfig,
+    context: PresentationContext | None = None,
+) -> Mapping[str, object] | None:
+    return store.cache_scope(config, context) if context is not None else None
+
+
+def _background_active(
+    store: CacheStore,
+    scope: Mapping[str, object] | None,
+) -> bool:
+    return bool(
+        store.background_active(max_age=AUTO_REFRESH_MAX_SECONDS)
+        if scope is None
+        else store.background_active(max_age=AUTO_REFRESH_MAX_SECONDS, scope=scope)
+    )
 
 
 def _message_for_cache(
@@ -1047,18 +1163,23 @@ def _render_error_notice(
 
 def _start_background_refresh(
     store: CacheStore,
+    scope: Mapping[str, object] | None = None,
 ) -> tuple[bool, float | None]:
     """Claim the detached refresh and return whether polling should be enabled."""
 
     try:
-        started = bool(store.spawn_background(_background_command()))
+        started = bool(
+            store.spawn_background(_background_command())
+            if scope is None
+            else store.spawn_background(_background_command(), scope=scope)
+        )
     except OSError:
         started = False
     if started:
         return True, time.time() + AUTO_REFRESH_MAX_SECONDS
     # Another picker invocation may already own the marker.  Continue polling
     # that worker, but never start a second one from this path.
-    if store.background_active(max_age=AUTO_REFRESH_MAX_SECONDS):
+    if _background_active(store, scope):
         return True, time.time() + AUTO_REFRESH_MAX_SECONDS
     return False, None
 
@@ -1070,7 +1191,16 @@ def _auto_refresh_callback(
 ) -> str:
     """Inspect cache state for the timeout callback without doing discovery."""
 
-    snapshot = store.load(config.fingerprint)
+    context = _presentation_context(store, config)
+    snapshot = _presentation_snapshot(store, config, context)
+    if context is not None and context.error and snapshot is None:
+        return _render_error_notice(
+            None,
+            f"Contract refresh failed: {sanitize(context.error)}",
+            preserve=True,
+            continuation=True,
+            navigation=_parse_continuation_state(environ.get("ROFI_DATA")).navigation,
+        )
     fresh = snapshot is not None and store.is_fresh(snapshot, config.refresh_seconds)
     rofi_data = environ.get("ROFI_DATA")
     continuation_state = _parse_continuation_state(rofi_data)
@@ -1141,7 +1271,10 @@ def _auto_refresh_callback(
 
     deadline = continuation_state.refresh_deadline
     timed_out = deadline is not None and now >= deadline
-    marker_active = not timed_out and store.background_active(max_age=AUTO_REFRESH_MAX_SECONDS)
+    marker_active = not timed_out and _background_active(
+        store,
+        _refresh_scope(store, config, context),
+    )
     if marker_active:
         if deadline is None:
             deadline = now + AUTO_REFRESH_MAX_SECONDS
@@ -1167,7 +1300,7 @@ def _auto_refresh_callback(
     # The worker writes the snapshot before removing its marker.  If both
     # operations happen between the first load and the marker check, take one
     # final read so a completed refresh wins over the stale stopped state.
-    latest = store.load(config.fingerprint)
+    latest = _presentation_snapshot(store, config, context)
     if latest is not None and store.is_fresh(latest, config.refresh_seconds):
         latest_message = summarize_errors(latest.get("errors", []))
         if latest_message:
@@ -1208,11 +1341,19 @@ def _auto_refresh_callback(
     )
 
 
-def _forced_refresh(store: CacheStore, config: PickerConfig) -> dict[str, Any]:
+def _forced_refresh(
+    store: CacheStore,
+    config: PickerConfig,
+    context: PresentationContext | None = None,
+) -> dict[str, Any]:
     """Refresh with a hard foreground bound for the Alt+R callback."""
 
     if not hasattr(signal, "SIGALRM"):
-        return store.refresh(config, force=True)
+        return (
+            store.refresh(config, force=True, context=context)
+            if context
+            else store.refresh(config, force=True)
+        )
 
     def timeout_handler(_signum: int, _frame: object) -> None:
         raise engine.PickerError("refresh timed out")
@@ -1220,7 +1361,11 @@ def _forced_refresh(store: CacheStore, config: PickerConfig) -> dict[str, Any]:
     previous_handler = signal.signal(signal.SIGALRM, timeout_handler)
     signal.setitimer(signal.ITIMER_REAL, FORCED_REFRESH_TIMEOUT_SECONDS)
     try:
-        return store.refresh(config, force=True)
+        return (
+            store.refresh(config, force=True, context=context)
+            if context
+            else store.refresh(config, force=True)
+        )
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous_handler)
@@ -1298,6 +1443,41 @@ def run_rofi(
         print(rendered, end="")
         return 0
 
+    context = _presentation_context(store, config)
+
+    # A present but malformed companion pair is never the same thing as an
+    # absent capability.  Render its bounded diagnostic for every non-exit
+    # callback, including structural navigation and a selected row, before
+    # any callback can silently render an empty legacy-shaped list.
+    if context is not None and context.error:
+        try:
+            snapshot = _presentation_snapshot(store, config, context)
+            if snapshot is None:
+                snapshot = store.refresh(config, force=True, context=context)
+            print(
+                _render_error_notice(
+                    snapshot,
+                    f"Contract refresh failed: {sanitize(context.error)}",
+                    preserve=retv != 0,
+                    continuation=retv != 0,
+                    refresh_deadline=continuation_state.active().refresh_deadline,
+                    navigation=navigation,
+                ),
+                end="",
+            )
+        except (engine.PickerError, OSError, subprocess.SubprocessError) as exc:
+            print(
+                _render_error_notice(
+                    None,
+                    f"Contract refresh failed: {sanitize(exc)}",
+                    preserve=retv != 0,
+                    continuation=retv != 0,
+                    navigation=navigation,
+                ),
+                end="",
+            )
+        return 0
+
     if retv in {2, 3}:
         # ``no-custom`` normally prevents these callbacks.  If a user has a
         # global Rofi binding that still emits one, keep the list intact and
@@ -1309,7 +1489,7 @@ def run_rofi(
                 selected = _parse_selection(environ.get("ROFI_INFO"))
             except engine.PickerError:
                 selected = None
-        snapshot = store.load(config.fingerprint)
+        snapshot = _presentation_snapshot(store, config, context)
         notice = "Custom input is disabled" if retv == 2 else "Deletion is disabled"
         print(
             render_snapshot(
@@ -1330,7 +1510,7 @@ def run_rofi(
         try:
             row_type, selected = _parse_row_selection(environ.get("ROFI_INFO"))
             if row_type == "group":
-                snapshot = store.load(config.fingerprint)
+                snapshot = _presentation_snapshot(store, config, context)
                 next_navigation = _enter_group(navigation, selected, snapshot)
                 print(
                     _render_continuation(
@@ -1341,11 +1521,16 @@ def run_rofi(
                     end="",
                 )
                 return 0
-            _open_selection(selected, config)
+            if selected.get("contractMode") is True:
+                _open_selection(selected, config, store=store, context=context)
+            else:
+                # Preserve the legacy callback and opening path exactly while
+                # a missing companion pair remains the rollback authority.
+                _open_selection(selected, config)
             # No rows means Rofi closes after a successful action.
             return 0
         except (engine.PickerError, OSError, subprocess.SubprocessError) as exc:
-            snapshot = store.load(config.fingerprint)
+            snapshot = _presentation_snapshot(store, config, context)
             operation = "open session" if row_type == "session" else "navigate"
             print(
                 _render_error_notice(
@@ -1368,7 +1553,7 @@ def run_rofi(
         # are intentionally unadvertised: supported bindings leave Tab and
         # Shift+Tab as Rofi's normal row navigation.
         direction = 1 if retv in {ROFI_RETV_CUSTOM_2, ROFI_RETV_CUSTOM_4} else -1
-        snapshot = store.load(config.fingerprint)
+        snapshot = _presentation_snapshot(store, config, context)
         print(
             _render_continuation(
                 snapshot,
@@ -1383,7 +1568,7 @@ def run_rofi(
         # Escape is Back inside a group and Exit at a root.  Returning no
         # records is the Rofi script-mode close signal, so do not render a
         # replacement list for the root case.
-        snapshot = store.load(config.fingerprint)
+        snapshot = _presentation_snapshot(store, config, context)
         print(
             _render_continuation(
                 snapshot,
@@ -1400,11 +1585,11 @@ def run_rofi(
 
     if retv == ROFI_RETV_CUSTOM_1:
         try:
-            snapshot = _forced_refresh(store, config)
+            snapshot = _forced_refresh(store, config, context)
             fresh = store.is_fresh(snapshot, config.refresh_seconds)
             polling = False
             deadline = None
-            if not fresh and store.background_active(max_age=AUTO_REFRESH_MAX_SECONDS):
+            if not fresh and _background_active(store, _refresh_scope(store, config, context)):
                 polling = True
                 deadline = _parse_refresh_deadline(environ.get("ROFI_DATA"))
                 if deadline is None:
@@ -1457,7 +1642,7 @@ def run_rofi(
                 end="",
             )
         except (engine.PickerError, OSError, subprocess.SubprocessError) as exc:
-            snapshot = store.load(config.fingerprint)
+            snapshot = _presentation_snapshot(store, config, context)
             print(
                 _render_error_notice(
                     snapshot,
@@ -1471,12 +1656,12 @@ def run_rofi(
             )
         return 0
 
-    snapshot = store.load(config.fingerprint)
+    snapshot = _presentation_snapshot(store, config, context)
     polling = False
     refresh_deadline = None
     if snapshot is None:
         try:
-            snapshot = store.refresh(config)
+            snapshot = store.refresh(config, context=context) if context else store.refresh(config)
         except (engine.PickerError, OSError, subprocess.SubprocessError) as exc:
             print(
                 _render_error_notice(
@@ -1491,12 +1676,15 @@ def run_rofi(
     else:
         fresh = store.is_fresh(snapshot, config.refresh_seconds)
         if not fresh:
-            polling, refresh_deadline = _start_background_refresh(store)
+            polling, refresh_deadline = _start_background_refresh(
+                store,
+                _refresh_scope(store, config, context),
+            )
             if not polling:
                 # If another worker finished between the first load and the
                 # marker check, show its fresh snapshot instead of stopping
                 # with rows that are already obsolete.
-                latest = store.load(config.fingerprint)
+                latest = _presentation_snapshot(store, config, context)
                 if latest is not None and store.is_fresh(latest, config.refresh_seconds):
                     latest_message = summarize_errors(latest.get("errors", []))
                     print(

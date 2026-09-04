@@ -98,7 +98,7 @@ def diagnostic_main(argv: Sequence[str] | None = None) -> int:
                 snapshot = store.refresh(config, force=True)
             finally:
                 if args.background:
-                    store.clear_background_marker()
+                    store.clear_owned_background_marker()
             if not args.background:
                 print(json.dumps(snapshot, separators=(",", ":")))
             return 0
@@ -157,7 +157,7 @@ def diagnostic_main(argv: Sequence[str] | None = None) -> int:
         return 0
     except (ConfigError, engine.PickerError) as exc:
         if refresh_store is not None and args.background:
-            refresh_store.clear_background_marker()
+            refresh_store.clear_owned_background_marker()
         print(f"rofi-agent-plus: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

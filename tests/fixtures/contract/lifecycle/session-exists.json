@@ -1,0 +1,4 @@
+{
+  "scenario": "strict creation name collision",
+  "response": {"schemaVersion": 1, "ok": false, "error": {"code": "session_exists", "message": "a tmux session with that exact name already exists", "hostId": "local"}}
+}

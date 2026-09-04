@@ -1,8 +1,10 @@
 # Rofi Agent Plus Suite Integration
 
-Status: proposed suite-integration design. The source and repository have been
-cleanly renamed to `rofi-agent-plus`; the current implementation remains
-standalone and does not yet consume either contract described here.
+Status: P5 discovery/correlation/cache plus contract-backed open/create is implemented. Agent Plus
+consumes Host Mesh v1 and Tmux Session v1 through public process contracts when
+both capability executables are available; the complete legacy backend remains
+the rollback path when zero or one is present. Tmux Plus retains generic
+rename/kill ownership; Agent Plus has no rename/kill action.
 
 ## Target ownership
 
@@ -65,9 +67,9 @@ After migration, Agent Plus no longer owns:
 - generic local or SSH tmux attachment; or
 - raw tmux session creation and option-setting mechanics.
 
-The current implementation keeps these paths until both external contracts are
-implemented and deployed. Compatibility code is removed only after equivalent
-behavior has contract tests and live acceptance.
+The current implementation keeps legacy lifecycle paths until contract
+open/create has deployed and received live acceptance. Compatibility code is
+removed only after equivalent behavior has contract tests and live acceptance.
 
 ## Discovery flow
 
@@ -283,8 +285,9 @@ provider-specific actions or icons merely to create a reverse dependency.
 1. Land Host Mesh v1 fixtures and implementation in SSH Plus.
 2. Land Tmux Session v1 fixtures and implementation in Tmux Plus.
 3. Add Agent Plus consumer adapters behind explicit capability detection.
-4. Run legacy and contract-backed engines side by side against deterministic
-   fixtures and compare host/session identity, activity, and opening decisions.
+4. Run legacy and contract-backed discovery side by side against deterministic
+   fixtures and compare host/session identity, activity, and lifecycle
+   decisions (open-existing, create, and active-outside-tmux refusal).
 5. Deploy all three pins and public `~/.local/bin` entry points together, then
    verify local plus remote discovery, focus, create, and resume on the intended
    host.

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "success": {"schemaVersion": 1, "ok": true, "meshRevision": null},
+  "errors": {
+    "unknown_host": {"schemaVersion": 1, "ok": false, "error": {"code": "unknown_host", "message": "unknown local host: other", "hostId": "other"}},
+    "stale_mesh": {"schemaVersion": 1, "ok": false, "error": {"code": "stale_mesh", "message": "the current local-only host mesh has no revision"}},
+    "host_unreachable": {"schemaVersion": 1, "ok": false, "error": {"code": "host_unreachable", "message": "reserved for remote Host Mesh transport"}},
+    "tmux_missing": {"schemaVersion": 1, "ok": false, "error": {"code": "tmux_missing", "message": "tmux is not available"}},
+    "session_not_found": {"schemaVersion": 1, "ok": false, "error": {"code": "session_not_found", "message": "the selected tmux session no longer exists", "hostId": "local"}},
+    "session_exists": {"schemaVersion": 1, "ok": false, "error": {"code": "session_exists", "message": "a tmux session with that exact name already exists", "hostId": "local"}},
+    "stale_session": {"schemaVersion": 1, "ok": false, "error": {"code": "stale_session", "message": "the selected tmux session changed; refresh and try again", "hostId": "local"}},
+    "invalid_input": {"schemaVersion": 1, "ok": false, "error": {"code": "invalid_input", "message": "invalid request"}},
+    "invalid_cwd": {"schemaVersion": 1, "ok": false, "error": {"code": "invalid_cwd", "message": "cwd must name an existing directory", "hostId": "local"}},
+    "launch_failed": {"schemaVersion": 1, "ok": false, "error": {"code": "launch_failed", "message": "could not launch terminal", "hostId": "local"}},
+    "operation_failed": {"schemaVersion": 1, "ok": false, "error": {"code": "operation_failed", "message": "operation failed"}}
+  }
+}

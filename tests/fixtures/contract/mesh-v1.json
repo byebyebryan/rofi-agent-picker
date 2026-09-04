@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": 1722743000000,
+  "meshRevision": "sha256:mesh-v1",
+  "localHostId": "alpha",
+  "sshPolicy": {"executable": "ssh", "connectTimeoutSeconds": 2, "connectionAttempts": 1, "routeHealthTtlSeconds": 300},
+  "hosts": [
+    {"id": "alpha", "display": "Alpha", "local": true, "aliases": ["alpha", "alpha.example"], "routes": []},
+    {"id": "beta", "display": "Beta", "local": false, "aliases": ["beta-native"], "routes": [{"destination": "beta-first.test", "configuredIndex": 1, "lastReachableAt": 1722742999000, "lastUnreachableAt": null}, {"destination": "beta-fallback.test", "configuredIndex": 0, "lastReachableAt": null, "lastUnreachableAt": null}]}
+  ]
+}

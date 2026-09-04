@@ -1,0 +1,4 @@
+{
+  "scenario": "deferred command creation remains pending before first client",
+  "response": {"schemaVersion": 1, "ok": true, "meshRevision": null, "session": {"hostId": "local", "serverGeneration": "tmux-v1:1722741000:1234:/run/user/1000/tmux-1000/default", "sessionId": "$8", "createdAt": 1722742008, "name": "new-agent", "activityAt": 1722742008, "lastAttachedAt": null, "attachedClients": 0, "pending": true, "windowCount": 1, "sessionPath": "/home/user", "currentWindow": "shell", "currentPath": "/home/user"}}
+}
