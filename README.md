@@ -49,6 +49,13 @@ the filter and selection.  `Alt+R` performs a bounded foreground refresh.
 Custom input and deletion remain disabled.  Rofi must be launched with `-eh 2`
 so each list element reserves height for both display lines.
 
+The Rofi callback boundary fails closed: configuration, model, and callback
+errors become bounded notices, while root Escape still returns no rows even
+when setup fails. If a nested Escape callback cannot reload its model, it
+renders the enclosing root with a safe error notice so the next Escape closes
+the dialog. Ctrl+G remains Rofi's native unconditional cancel binding and is
+never handled as a script callback.
+
 The `Hosts` view groups sessions by their logical displayed host and orders
 hosts by the newest session they contain.  The `Providers` view uses the
 stable Codex, Claude Code, and OpenCode order and omits empty providers.

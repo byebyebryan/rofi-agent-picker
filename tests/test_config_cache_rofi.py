@@ -902,6 +902,69 @@ class RofiProtocolTest(unittest.TestCase):
         self.assertEqual(0, result)
         self.assertEqual("", output.getvalue())
 
+    def test_escape_recovers_to_root_when_configuration_fails_in_nested_view(self) -> None:
+        nested = NavigationState("hosts", "host", "workstation")
+        output = io.StringIO()
+        with (
+            mock.patch("sys.stdout", output),
+            mock.patch(
+                "rofi_agent_plus.rofi.load_config",
+                side_effect=ConfigError("invalid config"),
+            ),
+        ):
+            result = run_rofi(
+                {
+                    "ROFI_RETV": str(ROFI_RETV_CUSTOM_6),
+                    "ROFI_DATA": _navigation_data(nested),
+                },
+                store=mock.Mock(spec=CacheStore),
+            )
+        self.assertEqual(0, result)
+        rendered = output.getvalue()
+        self.assertIn("Agents › Hosts\t", rendered)
+        self.assertNotIn("Agents › Hosts › workstation", rendered)
+        self.assertIn("Configuration failed: invalid config", rendered)
+        self.assertIn("navigation:", rendered)
+
+    def test_escape_recovers_to_root_when_model_or_snapshot_fails(self) -> None:
+        nested = NavigationState("providers", "provider", "codex")
+        store = mock.Mock(spec=CacheStore)
+        store.presentation_context.side_effect = RuntimeError("model unavailable")
+        output = io.StringIO()
+        with mock.patch("sys.stdout", output):
+            result = run_rofi(
+                {
+                    "ROFI_RETV": str(ROFI_RETV_CUSTOM_6),
+                    "ROFI_DATA": _navigation_data(nested),
+                },
+                store=store,
+                config=PickerConfig(),
+            )
+        self.assertEqual(0, result)
+        rendered = output.getvalue()
+        self.assertIn("Agents › Providers\t", rendered)
+        self.assertNotIn("Agents › Providers › Codex", rendered)
+        self.assertIn("Model setup failed: model unavailable", rendered)
+
+        store = mock.Mock(spec=CacheStore)
+        store.presentation_context.return_value = None
+        store.load.side_effect = RuntimeError("snapshot unavailable")
+        output = io.StringIO()
+        with mock.patch("sys.stdout", output):
+            result = run_rofi(
+                {
+                    "ROFI_RETV": str(ROFI_RETV_CUSTOM_6),
+                    "ROFI_DATA": _navigation_data(nested),
+                },
+                store=store,
+                config=PickerConfig(),
+            )
+        self.assertEqual(0, result)
+        rendered = output.getvalue()
+        self.assertIn("Agents › Providers\t", rendered)
+        self.assertNotIn("Agents › Providers › Codex", rendered)
+        self.assertIn("Unable to return to group root: snapshot unavailable", rendered)
+
     def test_enter_drills_groups_and_opens_session_leaves(self) -> None:
         snapshot = {"sessions": [session()], "errors": []}
         store = mock.Mock(spec=CacheStore)

@@ -1,7 +1,7 @@
 # Rofi Agent Plus Suite Integration
 
-Status: P5 discovery/correlation/cache plus contract-backed open/create is implemented. Agent Plus
-consumes Host Mesh v1 and Tmux Session v1 through public process contracts when
+Status: P6 discovery/correlation/cache, contract-backed open/create, and
+fail-closed Rofi callbacks are implemented. Agent Plus consumes Host Mesh v1 and Tmux Session v1 through public process contracts when
 both capability executables are available; the complete legacy backend remains
 the rollback path when zero or one is present. Tmux Plus retains generic
 rename/kill ownership; Agent Plus has no rename/kill action.
@@ -193,6 +193,13 @@ The existing Rofi interaction contract remains unchanged:
 - Escape returns one layer and exits at a root; and
 - Ctrl+G exits unconditionally.
 
+The callback boundary is fail closed. Configuration, capability/model, and
+selection errors render bounded diagnostics without turning a callback failure
+into a process crash. Root Escape returns no rows before configuration or
+model setup, and nested Escape falls back to the enclosing view root when its
+snapshot cannot be loaded. Ctrl+G remains Rofi's native cancel binding and is
+not assigned to a script callback.
+
 ## Clean product rename
 
 The repository and source tree use `rofi-agent-plus` consistently across the
@@ -256,10 +263,11 @@ Mod+G  tmux sessions
 Mod+Shift+G  tmux cheatsheet
 ```
 
-These are target bindings for the Tmux Plus cutover. Until Tmux Plus is
-implemented and deployed, the live `Mod+G` DMS mux and `Mod+T` Ghostty
-bindings remain unchanged; `Mod+Return` is added with the coordinated desktop
-change.
+The managed Niri source assigns `Mod+G` to the Rofi Tmux Plus script mode and
+keeps `Mod+Shift+G` for the DMS tmux cheatsheet. The source-level binding is
+validated by Chezmoi's materialization checks; live focus, attach, and remote
+acceptance remain host-specific rollout checks. `Mod+T` and `Mod+Return` both
+launch Ghostty.
 
 After the data and lifecycle contracts are stable, SSH Plus may add contextual
 actions that launch Tmux Plus or Agent Plus already scoped to the selected
@@ -284,15 +292,19 @@ provider-specific actions or icons merely to create a reverse dependency.
 
 ## Adoption and acceptance
 
-1. Land Host Mesh v1 fixtures and implementation in SSH Plus.
-2. Land Tmux Session v1 fixtures and implementation in Tmux Plus.
+1. Land Host Mesh v1 fixtures and implementation in SSH Plus. (Complete in
+   current source.)
+2. Land Tmux Session v1 fixtures and implementation in Tmux Plus. (Complete
+   in current source.)
 3. Add Agent Plus consumer adapters behind explicit capability detection.
+   (Complete in current source.)
 4. Run legacy and contract-backed discovery side by side against deterministic
    fixtures and compare host/session identity, activity, and lifecycle
    decisions (open-existing, create, and active-outside-tmux refusal).
-5. Deploy all three pins and public `~/.local/bin` entry points together, then
-   verify local plus remote discovery, focus, create, and resume on the intended
-   host.
+5. Keep all three public commands and Rofi modes on the managed `PATH` and
+   verify local plus remote discovery, focus, create, and resume on each
+   intended host. (Binding/configuration source is complete; live acceptance
+   remains an operator gate.)
 6. Remove legacy host-route and generic tmux code in a later reviewed change.
 
 Acceptance requires that the same logical machine has the same host ID and
@@ -301,4 +313,8 @@ stable tmux reference in both consumers, and that background refreshes do not
 alter SSH usage ranking. It also requires that each public command resolves
 from the Niri session's `PATH`, stale mesh observations are rejected rather
 than merged, and an external tmux rename cannot redirect an open or destructive
-action to a different session.
+action to a different session. P6 additionally requires that malformed
+configuration/model/callback data leaves every picker closable: root Escape and
+Ctrl+G close unconditionally, while nested Escape returns to a safe root. The
+Rofi bindings must preserve native Tab row navigation and must not capture
+Ctrl+G as a script callback.

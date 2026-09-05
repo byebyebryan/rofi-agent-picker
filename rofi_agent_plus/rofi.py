@@ -8,7 +8,6 @@ import os
 import re
 import signal
 import socket
-import subprocess
 import sys
 import time
 import unicodedata
@@ -21,7 +20,7 @@ from urllib.parse import quote, unquote
 
 from . import engine
 from .cache import CacheStore, PresentationContext
-from .config import ConfigError, PickerConfig, load_config
+from .config import PickerConfig, load_config
 from .contract_lifecycle import ContractLifecycle
 
 ROFI_RETV_SELECTED = 1
@@ -1161,6 +1160,33 @@ def _render_error_notice(
     )
 
 
+def _escape_error_output(
+    state: ContinuationState,
+    message: str,
+    *,
+    refresh_deadline: float | None = None,
+) -> str:
+    """Recover a nested Escape callback without depending on the model.
+
+    Rofi invokes the script again for custom callbacks.  A configuration or
+    model failure must not leave the continuation scoped to a group that can
+    no longer be rendered: pressing Escape again would otherwise repeat the
+    same failure forever.  Root Escape is handled before setup and returns no
+    rows, so this helper only emits the enclosing root for a nested state.
+    """
+
+    if not state.navigation.nested:
+        return ""
+    return _render_error_notice(
+        None,
+        message,
+        preserve=True,
+        continuation=True,
+        refresh_deadline=refresh_deadline,
+        navigation=state.navigation.root(),
+    )
+
+
 def _start_background_refresh(
     store: CacheStore,
     scope: Mapping[str, object] | None = None,
@@ -1387,14 +1413,23 @@ def run_rofi(
 
     continuation_state = _parse_continuation_state(environ.get("ROFI_DATA"))
     navigation = continuation_state.navigation
-    store = store or CacheStore()
     if retv == ROFI_RETV_CUSTOM_6 and not navigation.nested:
         # Escape is an unconditional root-level exit, including when loading
         # the configuration would otherwise produce an error row.
         return 0
+    store = store or CacheStore()
     try:
         config = config or load_config()
-    except ConfigError as exc:
+    except Exception as exc:  # noqa: BLE001 - visible Rofi configuration boundary
+        if retv == ROFI_RETV_CUSTOM_6:
+            rendered = _escape_error_output(
+                continuation_state,
+                f"Configuration failed: {sanitize(exc)}",
+                refresh_deadline=continuation_state.active().refresh_deadline,
+            )
+            if rendered:
+                print(rendered, end="")
+            return 0
         if retv == ROFI_RETV_CUSTOM_19:
             now = time.time()
             active = continuation_state.active(now)
@@ -1443,13 +1478,45 @@ def run_rofi(
         print(rendered, end="")
         return 0
 
-    context = _presentation_context(store, config)
+    try:
+        context = _presentation_context(store, config)
+    except Exception as exc:  # noqa: BLE001 - private model boundary
+        if retv == ROFI_RETV_CUSTOM_6:
+            rendered = _escape_error_output(
+                continuation_state,
+                f"Model setup failed: {sanitize(exc)}",
+                refresh_deadline=continuation_state.active().refresh_deadline,
+            )
+            if rendered:
+                print(rendered, end="")
+            return 0
+        print(
+            _render_error_notice(
+                None,
+                f"Model setup failed: {sanitize(exc)}",
+                preserve=retv != 0,
+                continuation=retv != 0,
+                refresh_deadline=continuation_state.active().refresh_deadline,
+                navigation=navigation,
+            ),
+            end="",
+        )
+        return 0
 
     # A present but malformed companion pair is never the same thing as an
     # absent capability.  Render its bounded diagnostic for every non-exit
     # callback, including structural navigation and a selected row, before
     # any callback can silently render an empty legacy-shaped list.
     if context is not None and context.error:
+        if retv == ROFI_RETV_CUSTOM_6:
+            rendered = _escape_error_output(
+                continuation_state,
+                f"Contract refresh failed: {sanitize(context.error)}",
+                refresh_deadline=continuation_state.active().refresh_deadline,
+            )
+            if rendered:
+                print(rendered, end="")
+            return 0
         try:
             snapshot = _presentation_snapshot(store, config, context)
             if snapshot is None:
@@ -1465,7 +1532,7 @@ def run_rofi(
                 ),
                 end="",
             )
-        except (engine.PickerError, OSError, subprocess.SubprocessError) as exc:
+        except Exception as exc:  # noqa: BLE001 - defensive callback boundary
             print(
                 _render_error_notice(
                     None,
@@ -1489,7 +1556,21 @@ def run_rofi(
                 selected = _parse_selection(environ.get("ROFI_INFO"))
             except engine.PickerError:
                 selected = None
-        snapshot = _presentation_snapshot(store, config, context)
+        try:
+            snapshot = _presentation_snapshot(store, config, context)
+        except Exception as exc:  # noqa: BLE001 - private model boundary
+            print(
+                _render_error_notice(
+                    None,
+                    f"Model refresh failed: {sanitize(exc)}",
+                    preserve=True,
+                    continuation=True,
+                    refresh_deadline=continuation_state.active().refresh_deadline,
+                    navigation=navigation,
+                ),
+                end="",
+            )
+            return 0
         notice = "Custom input is disabled" if retv == 2 else "Deletion is disabled"
         print(
             render_snapshot(
@@ -1529,8 +1610,11 @@ def run_rofi(
                 _open_selection(selected, config)
             # No rows means Rofi closes after a successful action.
             return 0
-        except (engine.PickerError, OSError, subprocess.SubprocessError) as exc:
-            snapshot = _presentation_snapshot(store, config, context)
+        except Exception as exc:  # noqa: BLE001 - selected callback boundary
+            try:
+                snapshot = _presentation_snapshot(store, config, context)
+            except Exception:  # noqa: BLE001 - preserve the original callback error
+                snapshot = None
             operation = "open session" if row_type == "session" else "navigate"
             print(
                 _render_error_notice(
@@ -1553,34 +1637,60 @@ def run_rofi(
         # are intentionally unadvertised: supported bindings leave Tab and
         # Shift+Tab as Rofi's normal row navigation.
         direction = 1 if retv in {ROFI_RETV_CUSTOM_2, ROFI_RETV_CUSTOM_4} else -1
-        snapshot = _presentation_snapshot(store, config, context)
-        print(
-            _render_continuation(
+        next_navigation = _cycled_root(navigation, direction)
+        try:
+            snapshot = _presentation_snapshot(store, config, context)
+            rendered = _render_continuation(
                 snapshot,
                 continuation_state,
-                navigation=_cycled_root(navigation, direction),
-            ),
-            end="",
-        )
+                navigation=next_navigation,
+            )
+        except Exception as exc:  # noqa: BLE001 - structural callback boundary
+            rendered = _render_error_notice(
+                None,
+                f"Navigation failed: {sanitize(exc)}",
+                preserve=True,
+                continuation=True,
+                refresh_deadline=continuation_state.active().refresh_deadline,
+                navigation=next_navigation,
+            )
+        print(rendered, end="")
         return 0
 
     if retv == ROFI_RETV_CUSTOM_6:
         # Escape is Back inside a group and Exit at a root.  Returning no
         # records is the Rofi script-mode close signal, so do not render a
         # replacement list for the root case.
-        snapshot = _presentation_snapshot(store, config, context)
-        print(
-            _render_continuation(
+        next_navigation = navigation.root()
+        try:
+            snapshot = _presentation_snapshot(store, config, context)
+            rendered = _render_continuation(
                 snapshot,
                 continuation_state,
-                navigation=navigation.root(),
-            ),
-            end="",
-        )
+                navigation=next_navigation,
+            )
+        except Exception as exc:  # noqa: BLE001 - Escape must always recover
+            rendered = _escape_error_output(
+                continuation_state,
+                f"Unable to return to group root: {sanitize(exc)}",
+                refresh_deadline=continuation_state.active().refresh_deadline,
+            )
+        print(rendered, end="")
         return 0
 
     if retv == ROFI_RETV_CUSTOM_19:
-        print(_auto_refresh_callback(environ, store, config), end="")
+        try:
+            rendered = _auto_refresh_callback(environ, store, config)
+        except Exception as exc:  # noqa: BLE001 - timeout callback boundary
+            rendered = _render_error_notice(
+                None,
+                f"Refresh failed: {sanitize(exc)}",
+                preserve=True,
+                continuation=True,
+                refresh_deadline=continuation_state.active().refresh_deadline,
+                navigation=navigation,
+            )
+        print(rendered, end="")
         return 0
 
     if retv == ROFI_RETV_CUSTOM_1:
@@ -1641,8 +1751,11 @@ def run_rofi(
                 ),
                 end="",
             )
-        except (engine.PickerError, OSError, subprocess.SubprocessError) as exc:
-            snapshot = _presentation_snapshot(store, config, context)
+        except Exception as exc:  # noqa: BLE001 - bounded refresh callback boundary
+            try:
+                snapshot = _presentation_snapshot(store, config, context)
+            except Exception:  # noqa: BLE001 - preserve the original refresh error
+                snapshot = None
             print(
                 _render_error_notice(
                     snapshot,
@@ -1656,13 +1769,25 @@ def run_rofi(
             )
         return 0
 
-    snapshot = _presentation_snapshot(store, config, context)
+    try:
+        snapshot = _presentation_snapshot(store, config, context)
+    except Exception as exc:  # noqa: BLE001 - initial model boundary
+        print(
+            _render_error_notice(
+                None,
+                f"Model refresh failed: {sanitize(exc)}",
+                refresh_deadline=continuation_state.active().refresh_deadline,
+                navigation=navigation,
+            ),
+            end="",
+        )
+        return 0
     polling = False
     refresh_deadline = None
     if snapshot is None:
         try:
             snapshot = store.refresh(config, context=context) if context else store.refresh(config)
-        except (engine.PickerError, OSError, subprocess.SubprocessError) as exc:
+        except Exception as exc:  # noqa: BLE001 - initial refresh boundary
             print(
                 _render_error_notice(
                     None,
