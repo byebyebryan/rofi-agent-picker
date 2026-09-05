@@ -300,7 +300,7 @@ class ContractLifecycleTest(unittest.TestCase):
         with self.assertRaisesRegex(LifecycleError, "exact name"):
             lifecycle.open_or_create(self.selection())
         self.assertEqual(8, len(backend.calls))
-        base = f"agent-codex-{THREAD[:12]}"
+        base = "native-name"
         self.assertEqual(
             [
                 base,
@@ -324,6 +324,30 @@ class ContractLifecycleTest(unittest.TestCase):
         self.assertEqual(2, len(backend.calls))
         self.assertIn("--cwd", backend.calls[0][0])
         self.assertNotIn("--cwd", backend.calls[1][0])
+
+    def test_create_falls_back_to_provider_identity_when_title_has_no_safe_characters(
+        self,
+    ) -> None:
+        for title in ("日本語", "bad\nname", "x" * 4097):
+            with self.subTest(title=title[:20]):
+                selected = row(tmux=False)
+                selected["name"] = title
+                lifecycle, _store, backend, _context = self.harness(
+                    [selected], [success(descriptor(pending=True))]
+                )
+                lifecycle.open_or_create(self.selection())
+                argv = backend.calls[0][0]
+                self.assertEqual(f"agent-codex-{THREAD[:12]}", argv[argv.index("--name") + 1])
+
+    def test_create_strips_leading_title_separators(self) -> None:
+        selected = row(tmux=False)
+        selected["name"] = "__rofi"
+        lifecycle, _store, backend, _context = self.harness(
+            [selected], [success(descriptor(pending=True))]
+        )
+        lifecycle.open_or_create(self.selection())
+        argv = backend.calls[0][0]
+        self.assertEqual("rofi", argv[argv.index("--name") + 1])
 
     def test_active_outside_or_unknown_provider_never_creates(self) -> None:
         for kind in ("codex", "claude", "opencode"):

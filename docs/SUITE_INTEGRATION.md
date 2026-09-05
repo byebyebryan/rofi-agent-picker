@@ -49,7 +49,8 @@ Agent Plus remains authoritative for:
 - provider-specific resume commands and validation;
 - active provider processes, including agents running outside tmux;
 - correlation between native provider sessions and tmux panes/options;
-- waiting-session reuse and collision-free provider wrapper names; and
+- waiting-session reuse and title-derived, collision-free provider wrapper
+  names; and
 - the `Recent`, `Hosts`, and `Providers` presentation.
 
 SSH Plus must not know provider commands. Tmux Plus may carry generic pane
@@ -160,7 +161,8 @@ When no compatible tmux session exists:
 
 1. Apply provider-native checks, including the current protection against
    resuming an agent active outside tmux.
-2. Select a collision-free wrapper name and build the provider resume argv.
+2. Derive a human-readable wrapper name from the provider title, choose a
+   collision-free suffix when needed, and build the provider resume argv.
 3. Call `rofi-tmux-plus create` with the mesh revision, logical host, working
    directory, provider argv, provider `@` options, `--defer-until-attached`,
    and `--open`.

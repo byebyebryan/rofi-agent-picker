@@ -301,9 +301,16 @@ def _run_json(
     return _success_response(output, host_id, revision, opening=opening)
 
 
-def _safe_wrapper_name(kind: str, identifier: str, attempt: int) -> str:
+def _safe_wrapper_name(display_name: object, kind: str, identifier: str, attempt: int) -> str:
+    cleaned = (
+        re.sub(r"[^A-Za-z0-9_-]+", "-", display_name.strip()).strip("-_")
+        if isinstance(display_name, str)
+        and len(display_name) <= _MAX_FIELD
+        and not any(unicodedata.category(char).startswith("C") for char in display_name)
+        else ""
+    )
     suffix = identifier[:12].casefold()
-    base = f"agent-{kind}-{suffix}"
+    base = cleaned[:48] or f"agent-{kind}-{suffix}"
     candidate = base if attempt == 0 else f"{base}-{attempt + 1}"
     if not _NAME.fullmatch(candidate):
         raise LifecycleError("operation_failed", "cannot build a safe tmux wrapper name")
@@ -448,7 +455,7 @@ class ContractLifecycle:
         )
         invalid_cwd_retry = False
         for collision in range(_MAX_CREATE_COLLISIONS):
-            wrapper_name = _safe_wrapper_name(kind, identifier, collision)
+            wrapper_name = _safe_wrapper_name(row.get("name"), kind, identifier, collision)
             argv = [
                 self.backend.tmux_command,
                 "create",
